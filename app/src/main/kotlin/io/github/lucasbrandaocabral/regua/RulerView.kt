@@ -16,6 +16,7 @@ import io.github.lucasbrandaocabral.regua.geometry.ShotSolver
 import io.github.lucasbrandaocabral.regua.geometry.Spin
 import io.github.lucasbrandaocabral.regua.geometry.Table
 import io.github.lucasbrandaocabral.regua.geometry.Vec2
+import io.github.lucasbrandaocabral.regua.vision.AimDetector
 import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.max
@@ -46,6 +47,23 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
 
     /** Toque fora da bola do efeito: pede para fechar o controle. */
     var onSpinPadDismissed: (() -> Unit)? = null
+
+    /** A janela mudou de tamanho (a tela girou). */
+    var onResized: (() -> Unit)? = null
+
+    /** Ligado: em [Mode.PLAY] a régua segue a mira que o jogo desenha, achada na captura de tela. */
+    var autoTracking = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Última mira achada na tela, em coordenadas desta janela. */
+    var autoAim: AimDetector.Result? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
 
     val isLandscape: Boolean get() = width > height
 
@@ -78,6 +96,7 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
     private val pottedPaint = strokePaint(GREEN, 2.5f)
     private val foulPaint = strokePaint(RED, 2f)
     private val cueAfterPaint = strokePaint(Color.WHITE, 1.5f, dashed = true)
+    private val autoCueAfterPaint = strokePaint(LILAC, 1.5f, dashed = true)
     private val scratchPaint = strokePaint(RED, 2f, dashed = true)
     private val ghostPaint = strokePaint(Color.WHITE, 1.5f, dashed = true)
     private val cueMarkerPaint = strokePaint(Color.WHITE, 1.5f)
@@ -97,10 +116,13 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         setShadowLayer(dp(2f), 0f, 0f, Color.BLACK)
     }
     private val path = Path()
+    private val clip = Path()
     private val rect = RectF()
 
     private val w: Double get() = width.toDouble()
     private val h: Double get() = height.toDouble()
+
+    fun currentTable() = table()
 
     private fun table() = Table(
         left = settings.tableLeft * w,
@@ -124,6 +146,11 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
             settings.targetY = (p.y / h).toFloat()
         }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        onResized?.invoke()
+    }
+
     fun rotateAim(degrees: Float) {
         settings.aimDegrees = normalizeDegrees(settings.aimDegrees + degrees)
         invalidate()
@@ -138,8 +165,66 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
                 drawShot(canvas)
                 drawSpinPad(canvas)
             }
-            else -> drawShot(canvas)
+            Mode.PLAY -> if (autoTracking) drawAutoShot(canvas) else drawShot(canvas)
+            Mode.AIM -> drawShot(canvas)
         }
+    }
+
+    private fun spin() = Spin(settings.spinSide.toDouble(), settings.spinFollow.toDouble())
+
+    /**
+     * Mira automática: parte da branca e da direção que o jogo está mostrando. O que a régua desenha
+     * também aparece na captura do próximo quadro, então ela não desenha nada branco e deixa livres a
+     * branca, a linha do jogo, o anel e a linha da bola alvo (senão, numa tacada que volta pela mesma
+     * reta, cobriria a linha do jogo e perderia a mira). Ela só continua de onde as linhas do jogo acabam.
+     */
+    private fun drawAutoShot(canvas: Canvas) {
+        val aim = autoAim ?: return
+        val table = table()
+        val r = table.ballRadius
+        val targetBall = if (settings.targetEnabled) aim.objectBall else null
+        val shot = ShotSolver.solve(table, aim.cue, aim.direction, targetBall, settings.cushions, spin())
+
+        canvas.save()
+        clipOutCircle(canvas, aim.cue, 1.6 * r)
+        clipOutBand(canvas, aim.cue, aim.cue + aim.direction * aim.guideLength, 0.5 * r)
+        aim.ghost?.let { ghost ->
+            clipOutCircle(canvas, ghost, 3 * r)
+            aim.objectBall?.let { o -> clipOutBand(canvas, o, o + (o - ghost).normalized() * aim.objectGuideLength, 0.5 * r) }
+        }
+        val cuePaint = when {
+            shot.cue.end != PathEnd.POCKET -> cuePathPaint
+            targetBall != null -> foulPaint
+            else -> pottedPaint
+        }
+        drawPath(canvas, shot.cue, cuePaint, skip = aim.guideLength + 0.6 * r)
+        shot.objectBall?.let {
+            drawPath(canvas, it, if (it.end == PathEnd.POCKET) pottedPaint else objectPathPaint, skip = max(1.5 * r, aim.objectGuideLength + 0.6 * r))
+        }
+        shot.cueAfter?.let { drawPath(canvas, it, if (it.end == PathEnd.POCKET) scratchPaint else autoCueAfterPaint, skip = r) }
+        canvas.restore()
+    }
+
+    private fun clipOutCircle(canvas: Canvas, c: Vec2, radius: Double) {
+        clip.rewind()
+        clip.addCircle(c.x.f, c.y.f, radius.f, Path.Direction.CW)
+        canvas.clipOutPath(clip)
+    }
+
+    /** Tira do desenho uma faixa de meia largura [half] em volta do segmento de [a] até [b]. */
+    private fun clipOutBand(canvas: Canvas, a: Vec2, b: Vec2, half: Double) {
+        val u = (b - a).normalized()
+        if (u == Vec2.ZERO) return
+        val n = Vec2(-u.y, u.x) * half
+        val start = a - u * half
+        val end = b + u * half
+        clip.rewind()
+        clip.moveTo((start - n).x.f, (start - n).y.f)
+        clip.lineTo((end - n).x.f, (end - n).y.f)
+        clip.lineTo((end + n).x.f, (end + n).y.f)
+        clip.lineTo((start + n).x.f, (start + n).y.f)
+        clip.close()
+        canvas.clipOutPath(clip)
     }
 
     private fun drawShot(canvas: Canvas) {
@@ -147,8 +232,7 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         val r = table.ballRadius.toFloat()
         val targetBall = if (settings.targetEnabled) target else null
         val shot = ShotSolver.solve(
-            table, cue, Vec2.ofAngle(Math.toRadians(settings.aimDegrees.toDouble())), targetBall,
-            settings.cushions, Spin(settings.spinSide.toDouble(), settings.spinFollow.toDouble()),
+            table, cue, Vec2.ofAngle(Math.toRadians(settings.aimDegrees.toDouble())), targetBall, settings.cushions, spin(),
         )
 
         // Com alvo marcado, a branca caindo direto numa caçapa é falta; sem alvo a régua é só uma linha.
@@ -180,14 +264,35 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         }
     }
 
-    private fun drawPath(canvas: Canvas, ball: BallPath, paint: Paint) {
+    /** Desenha o caminho a partir de [skip] pixels do começo (o trecho antes disso fica de fora). */
+    private fun drawPath(canvas: Canvas, ball: BallPath, paint: Paint, skip: Double = 0.0) {
         path.rewind()
-        ball.points.forEachIndexed { i, p ->
-            if (i == 0) path.moveTo(p.x.f, p.y.f) else path.lineTo(p.x.f, p.y.f)
-        }
-        stroke(paint) { canvas.drawPath(path, it) }
         fillPaint.color = paint.color
-        for (b in ball.bounces) canvas.drawCircle(b.x.f, b.y.f, dp(3f), fillPaint)
+        var travelled = 0.0
+        var started = false
+        for (i in 1 until ball.points.size) {
+            val a = ball.points[i - 1]
+            val b = ball.points[i]
+            val length = a.distanceTo(b)
+            if (length == 0.0) continue
+            if (travelled + length > skip) {
+                if (!started) {
+                    val start = a + (b - a) * ((skip - travelled) / length).coerceIn(0.0, 1.0)
+                    path.moveTo(start.x.f, start.y.f)
+                    started = true
+                }
+                path.lineTo(b.x.f, b.y.f)
+            }
+            travelled += length
+        }
+        if (started) stroke(paint) { canvas.drawPath(path, it) }
+        // Pontos de batida nas tabelas, só no trecho desenhado.
+        travelled = 0.0
+        for (i in 1 until ball.points.size) {
+            travelled += ball.points[i - 1].distanceTo(ball.points[i])
+            val p = ball.points[i]
+            if (travelled > skip && p in ball.bounces) canvas.drawCircle(p.x.f, p.y.f, dp(3f), fillPaint)
+        }
         ball.pocket?.let { pocket ->
             ringPaint.color = paint.color
             stroke(ringPaint) { canvas.drawCircle(pocket.center.x.f, pocket.center.y.f, pocket.radius.f, it) }
@@ -462,6 +567,7 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         const val GREEN = 0xFF00E676.toInt()
         const val RED = 0xFFFF5252.toInt()
         const val ORANGE = 0xFFFF9100.toInt()
+        const val LILAC = 0xFFE040FB.toInt()
         const val SHADOW = 0x99000000.toInt()
         const val HINT_BACKGROUND = 0xCC000000.toInt()
         const val SPIN_BACKDROP = 0x99000000.toInt()

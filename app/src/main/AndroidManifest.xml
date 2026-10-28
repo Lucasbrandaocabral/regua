@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Mira automática: grava a tela para achar a linha que o jogo desenha. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- Para o botão Iniciar conseguir abrir o 8 Ball Pool no Android 11 ou mais novo. -->
     <queries>
@@ -30,11 +32,19 @@
         <service
             android:name=".OverlayService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaProjection">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Desenha a régua de mira por cima do jogo de sinuca aberto" />
         </service>
+
+        <!-- Só pede a permissão de gravar a tela; em outra tarefa para o jogo voltar quando fechar. -->
+        <activity
+            android:name=".ProjectionPermissionActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 
 </manifest>

@@ -29,8 +29,11 @@ import kotlin.math.roundToInt
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
 class ControlPanel(context: Context, private val actions: Actions) : LinearLayout(context) {
 
+    enum class AutoState { OFF, SEARCHING, TRACKING }
+
     interface Actions {
         fun toggleAim()
+        fun toggleAuto()
         fun rotate(degrees: Float)
         fun cycleCushions()
         fun toggleTarget()
@@ -46,6 +49,7 @@ class ControlPanel(context: Context, private val actions: Actions) : LinearLayou
 
     private val moveButton = iconButton(R.drawable.ic_move, "Mover painel; toque para recolher")
     private val modeButton = textButton()
+    private val autoButton = textButton().apply { text = "AUTO" }
     private val ccwButton = iconButton(R.drawable.ic_rotate_ccw, "Girar a mira para a esquerda")
     private val cwButton = iconButton(R.drawable.ic_rotate_cw, "Girar a mira para a direita")
     private val cushionButton = textButton()
@@ -65,12 +69,13 @@ class ControlPanel(context: Context, private val actions: Actions) : LinearLayou
             cornerRadius = dp(12f).toFloat()
             setColor(PANEL_BACKGROUND)
         }
-        (listOf(moveButton, modeButton) + collapsible).forEachIndexed { i, button ->
-            addView(button, LayoutParams(dp(40f), dp(34f)).apply { if (i > 0) topMargin = dp(3f) })
+        (listOf(moveButton, modeButton, autoButton) + collapsible).forEachIndexed { i, button ->
+            addView(button, LayoutParams(dp(40f), dp(30f)).apply { if (i > 0) topMargin = dp(2f) })
         }
         closeButton.background = buttonBackground(CLOSE)
 
         modeButton.setOnClickListener { actions.toggleAim() }
+        autoButton.setOnClickListener { actions.toggleAuto() }
         ccwButton.repeatWhileHeld { actions.rotate(-FINE_STEP_DEGREES) }
         cwButton.repeatWhileHeld { actions.rotate(FINE_STEP_DEGREES) }
         cushionButton.setOnClickListener { actions.cycleCushions() }
@@ -81,11 +86,23 @@ class ControlPanel(context: Context, private val actions: Actions) : LinearLayou
         setUpMoveButton()
     }
 
-    fun render(mode: RulerView.Mode, cushions: Int, targetEnabled: Boolean, spinSide: Float, spinFollow: Float) {
+    fun render(mode: RulerView.Mode, auto: AutoState, cushions: Int, targetEnabled: Boolean, spinSide: Float, spinFollow: Float) {
         val editing = mode != RulerView.Mode.PLAY
         modeButton.text = if (editing) "JOGAR" else "MIRAR"
         modeButton.contentDescription = if (editing) "Voltar ao jogo" else "Ajustar a régua"
         modeButton.background = buttonBackground(if (editing) GREEN else IDLE)
+        autoButton.background = buttonBackground(
+            when (auto) {
+                AutoState.OFF -> IDLE
+                AutoState.SEARCHING -> AMBER
+                AutoState.TRACKING -> GREEN
+            },
+        )
+        autoButton.contentDescription = when (auto) {
+            AutoState.OFF -> "Mira automática desligada"
+            AutoState.SEARCHING -> "Mira automática procurando a linha do jogo"
+            AutoState.TRACKING -> "Mira automática seguindo a linha do jogo"
+        }
         cushionButton.text = SpannableString("$cushions\ntab.").apply {
             setSpan(RelativeSizeSpan(0.7f), length - 4, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
@@ -227,6 +244,7 @@ class ControlPanel(context: Context, private val actions: Actions) : LinearLayou
         const val PRESSED = 0x66FFFFFF
         const val GREEN = 0xFF2E7D32.toInt()
         const val ORANGE = 0xFFE65100.toInt()
+        const val AMBER = 0xFFF9A825.toInt()
         const val PURPLE = 0xFF6A1B9A.toInt()
         const val TEAL = 0xFF00838F.toInt()
         const val CLOSE = 0x99B71C1C.toInt()

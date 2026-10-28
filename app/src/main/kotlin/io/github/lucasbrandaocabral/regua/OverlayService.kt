@@ -12,17 +12,24 @@ import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.drawable.Icon
 import android.hardware.input.InputManager
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
+import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Toast
+import io.github.lucasbrandaocabral.regua.geometry.Table
+import io.github.lucasbrandaocabral.regua.geometry.Vec2
+import io.github.lucasbrandaocabral.regua.vision.AimDetector
 import kotlin.math.roundToInt
 
 /**
  * Mantém a régua e o painel por cima dos outros apps. Roda em primeiro plano (com notificação) para
- * o Android não fechar a régua enquanto o jogo está aberto.
+ * o Android não fechar a régua enquanto o jogo está aberto. Com a mira automática ligada, também
+ * grava a tela para seguir a linha que o jogo desenha.
  */
 class OverlayService : Service(), ControlPanel.Actions {
 
@@ -32,13 +39,22 @@ class OverlayService : Service(), ControlPanel.Actions {
     private lateinit var panel: ControlPanel
     private lateinit var rulerParams: WindowManager.LayoutParams
     private lateinit var panelParams: WindowManager.LayoutParams
+    private lateinit var notification: Notification
     private var modeBeforeSpin = RulerView.Mode.PLAY
+
+    private var tracker: ScreenTracker? = null
+    private var autoState = ControlPanel.AutoState.OFF
+    private var lastAimAt = 0L
+
+    /** Onde a janela da régua começa na tela (normalmente 0,0). */
+    private var overlayOffset = Vec2.ZERO
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        startInForeground()
+        notification = buildNotification()
+        startForegroundWithTypes(capturing = false)
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return
@@ -47,8 +63,12 @@ class OverlayService : Service(), ControlPanel.Actions {
         settings = RulerSettings(this)
 
         ruler = RulerView(this, settings).apply {
-            onEdited = { settings.save() }
+            onEdited = {
+                settings.save()
+                updateTrackerTable()
+            }
             onSpinPadDismissed = { setMode(modeBeforeSpin) }
+            onResized = { updateTrackerTable() }
         }
         rulerParams = overlayParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT).apply {
             flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -60,7 +80,7 @@ class OverlayService : Service(), ControlPanel.Actions {
         panelParams = overlayParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
             // Por padrão fica colado na borda esquerda, onde o 8 Ball Pool não tem botões.
             x = if (settings.panelX >= 0) settings.panelX else 0
-            y = if (settings.panelY >= 0) settings.panelY else (44 * density).roundToInt()
+            y = if (settings.panelY >= 0) settings.panelY else (40 * density).roundToInt()
         }
 
         // A régua entra primeiro para o painel ficar por cima dela.
@@ -71,7 +91,20 @@ class OverlayService : Service(), ControlPanel.Actions {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) stopSelf()
+        when (intent?.action) {
+            ACTION_STOP -> stopSelf()
+            ACTION_TRACK -> {
+                // Veio por startForegroundService: tem que reafirmar o primeiro plano mesmo se não usar.
+                startForegroundWithTypes(capturing = tracker != null)
+                val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(EXTRA_DATA)
+                }
+                if (data != null && ::ruler.isInitialized) startTracking(intent.getIntExtra(EXTRA_CODE, 0), data)
+            }
+        }
         return START_NOT_STICKY
     }
 
@@ -80,11 +113,20 @@ class OverlayService : Service(), ControlPanel.Actions {
         if (!::ruler.isInitialized) return
         // Com a tela em pé a régua some; sem isso uma janela invisível seguraria os toques.
         if (newConfig.orientation != Configuration.ORIENTATION_LANDSCAPE) setMode(RulerView.Mode.PLAY)
-        ruler.post { clampPanel() }
+        tracker?.let {
+            val metrics = realMetrics()
+            it.resize(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
+        }
+        ruler.post {
+            clampPanel()
+            updateTrackerTable()
+        }
     }
 
     override fun onDestroy() {
         isRunning = false
+        tracker?.stop()
+        tracker = null
         if (::ruler.isInitialized) {
             settings.save()
             windowManager.removeView(panel)
@@ -99,6 +141,15 @@ class OverlayService : Service(), ControlPanel.Actions {
         setMode(if (ruler.mode == RulerView.Mode.PLAY) RulerView.Mode.AIM else RulerView.Mode.PLAY)
     }
 
+    override fun toggleAuto() {
+        if (tracker != null) {
+            stopTracking()
+            return
+        }
+        // O pedido de gravação de tela precisa de uma Activity; ela devolve a permissão para cá.
+        startActivity(Intent(this, ProjectionPermissionActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
     override fun rotate(degrees: Float) {
         ruler.rotateAim(degrees)
         settings.save()
@@ -111,6 +162,7 @@ class OverlayService : Service(), ControlPanel.Actions {
 
     override fun toggleTarget() {
         settings.targetEnabled = !settings.targetEnabled
+        tracker?.findObjectBall = settings.targetEnabled
         changed()
     }
 
@@ -145,7 +197,7 @@ class OverlayService : Service(), ControlPanel.Actions {
     }
 
     private fun renderPanel() {
-        panel.render(ruler.mode, settings.cushions, settings.targetEnabled, settings.spinSide, settings.spinFollow)
+        panel.render(ruler.mode, autoState, settings.cushions, settings.targetEnabled, settings.spinSide, settings.spinFollow)
     }
 
     private fun setMode(mode: RulerView.Mode) {
@@ -169,6 +221,98 @@ class OverlayService : Service(), ControlPanel.Actions {
         settings.save()
         renderPanel()
     }
+
+    // --- Mira automática ---
+
+    private fun startTracking(resultCode: Int, data: Intent) {
+        if (tracker != null) return
+        // Android 10+: a gravação só pode começar com o serviço em primeiro plano do tipo "mediaProjection".
+        startForegroundWithTypes(capturing = true)
+        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        val projection = try {
+            manager.getMediaProjection(resultCode, data)
+        } catch (e: RuntimeException) {
+            null
+        }
+        if (projection == null) {
+            startForegroundWithTypes(capturing = false)
+            Toast.makeText(this, "Não deu para gravar a tela; a régua segue no modo manual.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val metrics = realMetrics()
+        tracker = ScreenTracker(projection, ::onAim, ::onTrackingStopped).also {
+            it.findObjectBall = settings.targetEnabled
+            it.start(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
+        }
+        ruler.autoTracking = true
+        updateTrackerTable()
+        setAutoState(ControlPanel.AutoState.SEARCHING)
+    }
+
+    private fun stopTracking() {
+        tracker?.stop()
+        onTrackingStopped()
+    }
+
+    private fun onTrackingStopped() {
+        tracker = null
+        ruler.autoTracking = false
+        ruler.autoAim = null
+        startForegroundWithTypes(capturing = false)
+        setAutoState(ControlPanel.AutoState.OFF)
+    }
+
+    /** Resultado de um quadro (em pixels da tela) ou null se a mira do jogo não apareceu nele. */
+    private fun onAim(result: AimDetector.Result?) {
+        if (tracker == null) return
+        val now = SystemClock.uptimeMillis()
+        if (result != null) {
+            lastAimAt = now
+            ruler.autoAim = toOverlay(result)
+            setAutoState(ControlPanel.AutoState.TRACKING)
+        } else if (now - lastAimAt > LOST_AFTER_MS) {
+            // Um quadro perdido não apaga a linha (evita piscar); só some se a mira sumir de verdade.
+            ruler.autoAim = null
+            setAutoState(ControlPanel.AutoState.SEARCHING)
+        }
+    }
+
+    private fun setAutoState(state: ControlPanel.AutoState) {
+        if (state == autoState) return
+        autoState = state
+        renderPanel()
+    }
+
+    /** Passa a mesa calibrada (em pixels da tela) para quem procura a mira. */
+    private fun updateTrackerTable() {
+        val t = tracker ?: return
+        if (!ruler.isLandscape) {
+            t.table = null
+            return
+        }
+        val location = IntArray(2)
+        ruler.getLocationOnScreen(location)
+        overlayOffset = Vec2(location[0].toDouble(), location[1].toDouble())
+        val table = ruler.currentTable()
+        t.table = Table(
+            table.left + overlayOffset.x, table.top + overlayOffset.y,
+            table.right + overlayOffset.x, table.bottom + overlayOffset.y, table.ballRadius,
+        )
+    }
+
+    private fun toOverlay(r: AimDetector.Result) = AimDetector.Result(
+        cue = r.cue - overlayOffset,
+        direction = r.direction,
+        guideLength = r.guideLength,
+        ghost = r.ghost?.let { it - overlayOffset },
+        objectBall = r.objectBall?.let { it - overlayOffset },
+        objectGuideLength = r.objectGuideLength,
+    )
+
+    @Suppress("DEPRECATION")
+    private fun realMetrics() = DisplayMetrics().also { windowManager.defaultDisplay.getRealMetrics(it) }
+
+    // --- Janelas e notificação ---
 
     private fun clampPanel() {
         if (!panel.isAttachedToWindow) return
@@ -209,7 +353,7 @@ class OverlayService : Service(), ControlPanel.Actions {
         }
     }
 
-    private fun startInForeground() {
+    private fun buildNotification(): Notification {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Régua ativa", NotificationManager.IMPORTANCE_LOW),
@@ -220,7 +364,7 @@ class OverlayService : Service(), ControlPanel.Actions {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = Notification.Builder(this, CHANNEL_ID)
+        return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_regua)
             .setContentTitle("Régua ativa")
             .setContentText("Use o painel por cima do jogo. Toque em Parar para fechar.")
@@ -230,8 +374,13 @@ class OverlayService : Service(), ControlPanel.Actions {
                 Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_close), "Parar", stop).build(),
             )
             .build()
+    }
+
+    private fun startForegroundWithTypes(capturing: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                (if (capturing) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0)
+            startForeground(NOTIFICATION_ID, notification, types)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -239,10 +388,14 @@ class OverlayService : Service(), ControlPanel.Actions {
 
     companion object {
         private const val ACTION_STOP = "io.github.lucasbrandaocabral.regua.STOP"
+        private const val ACTION_TRACK = "io.github.lucasbrandaocabral.regua.TRACK"
+        private const val EXTRA_CODE = "code"
+        private const val EXTRA_DATA = "data"
         private const val CHANNEL_ID = "regua"
         private const val NOTIFICATION_ID = 1
         private const val MAX_CUSHIONS = 5
         private const val PLAY_ALPHA = 0.8f
+        private const val LOST_AFTER_MS = 300L
 
         @Volatile
         var isRunning = false
@@ -250,6 +403,16 @@ class OverlayService : Service(), ControlPanel.Actions {
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, OverlayService::class.java))
+        }
+
+        /** Entrega a permissão de gravar a tela (e liga a mira automática), iniciando a régua se preciso. */
+        fun startTracking(context: Context, resultCode: Int, data: Intent) {
+            context.startForegroundService(
+                Intent(context, OverlayService::class.java)
+                    .setAction(ACTION_TRACK)
+                    .putExtra(EXTRA_CODE, resultCode)
+                    .putExtra(EXTRA_DATA, data),
+            )
         }
 
         fun stop(context: Context) {

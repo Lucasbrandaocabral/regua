@@ -1,7 +1,8 @@
 # Régua
 
 App Android que desenha a rota da bola **por cima do jogo de sinuca** (feito com o 8 Ball Pool em mente).
-Você posiciona a régua sobre a bola branca e a bola alvo, e ela mostra:
+No modo automático ela segue sozinha a bola branca e a linha de mira do jogo; no manual você posiciona
+a régua sobre a bola branca e a bola alvo. Ela mostra:
 
 - **linha amarela**: caminho da branca, com até 5 tabelas;
 - **linha azul**: para onde a bola alvo vai depois do choque (fica **verde** quando cai na caçapa);
@@ -9,8 +10,8 @@ Você posiciona a régua sobre a bola branca e a bola alvo, e ela mostra:
 - **círculo tracejado**: a "bola fantasma", onde a branca está no instante do choque;
 - o **ângulo de corte** enquanto você ajusta.
 
-A régua não lê a tela nem mexe no jogo: ela só desenha por cima, e você encaixa os círculos nas bolas.
-Por isso a cor da mesa não importa.
+A régua não mexe no jogo: ela só desenha por cima. No modo manual ela nem olha a tela; no automático
+ela usa a gravação de tela do Android para achar a linha branca do jogo (veja abaixo). A cor da mesa não importa.
 
 ## Instalar
 
@@ -24,7 +25,26 @@ Funciona no Android 8 ou mais novo. No iPhone não é possível: o iOS não deix
 
 ## Usar
 
-1. Toque em **Iniciar régua**. O jogo abre com um painel de botões na borda esquerda.
+### Automático
+
+1. Deixe marcado "Seguir a linha do jogo sozinha" e toque em **Iniciar régua**.
+2. O Android pergunta se a Régua pode gravar/transmitir a tela: confirme (tela inteira). O jogo abre.
+3. É só jogar. Enquanto você gira o taco, a régua acha a bola branca e a linha branca do jogo e continua
+   a partir de onde a linha do jogo acaba: as tabelas da branca em amarelo, a bola alvo em azul (verde
+   quando cai) e a branca depois do choque em lilás (vermelha se ela também cai).
+
+O botão **AUTO** do painel mostra o estado: verde = seguindo a linha; amarelo = a linha do jogo não está
+aparecendo (vez do adversário, bolas andando); cinza = desligado (toque para ligar de novo).
+
+A régua só enxerga a branca, a linha de mira, o círculo de choque e a bola que esse círculo toca. Se houver
+outra bola no caminho depois do fim da linha do jogo, ela não sabe. Os quadros da tela são analisados no
+próprio celular, só na hora: nada é salvo nem enviado. O Android mostra o aviso de gravação enquanto o
+automático está ligado, e no Android 15 ou mais novo o jogo consegue saber que a tela está sendo gravada.
+
+### Manual
+
+1. Toque em **Iniciar régua** (com o automático desmarcado, ou desligue o AUTO no painel). O jogo abre
+   com um painel de botões na borda esquerda.
 2. Toque em **MIRAR**. Arraste o círculo branco até a bola branca e o laranja até a bola que você quer encaçapar.
    Arraste em qualquer outro lugar para girar a linha (quanto mais longe da branca, mais fino o ajuste).
 3. Toque em **JOGAR**: a linha continua na tela e os toques voltam para o jogo.
@@ -36,6 +56,7 @@ Botões do painel, de cima para baixo:
 | --- | --- |
 | Setas de 4 pontas | Arraste para mudar o painel de lugar; toque para recolher/abrir |
 | MIRAR / JOGAR | Alterna entre ajustar a régua e jogar |
+| AUTO | Liga/desliga a mira automática (pede para gravar a tela) |
 | Setas redondas | Giram a linha 0,1° por toque (segure para girar sem parar) |
 | Número "tab." | Quantas tabelas a linha mostra (0 a 5) |
 | Alvo | Liga/desliga a bola alvo |
@@ -73,8 +94,10 @@ Ela é ótima para treinar no modo offline/treino e entender ângulos e tabelas.
 
 ## Desenvolvimento
 
-- Kotlin puro, sem bibliotecas além do Android: `geometry/` tem a física (testada em `app/src/test`),
-  `RulerView` desenha, `ControlPanel` é o painel e `OverlayService` mantém as janelas por cima do jogo.
+- Kotlin puro, sem bibliotecas além do Android: `geometry/` tem a física e `vision/` acha a mira do jogo
+  num quadro da tela (os dois testados em `app/src/test`, a visão com mesas desenhadas pelos testes);
+  `RulerView` desenha, `ControlPanel` é o painel, `ScreenTracker` grava a tela e `OverlayService` mantém
+  as janelas por cima do jogo.
 - `./gradlew testReleaseUnitTest assembleRelease` roda os testes e gera `app/build/outputs/apk/release/app-release.apk`.
 - O APK é assinado com `app/regua.keystore`, uma chave **sem segredo** versionada de propósito para que todo
   build atualize por cima do anterior. Para distribuir o app, gere uma chave própria e guarde-a fora do repositório.

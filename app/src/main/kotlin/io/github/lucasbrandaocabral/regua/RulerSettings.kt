@@ -30,6 +30,11 @@ class RulerSettings(context: Context) {
     var spinSide = prefs.getFloat(KEY_SPIN_SIDE, 0f)
     var spinFollow = prefs.getFloat(KEY_SPIN_FOLLOW, 0f)
 
+    /** Ao iniciar a régua, já pedir a gravação de tela para a mira automática. Salva na hora. */
+    var autoTrack: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_TRACK, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_TRACK, value).apply()
+
     /** Posição do painel em pixels; negativo enquanto o usuário não mover o painel. */
     var panelX = prefs.getInt(KEY_PANEL_X, -1)
     var panelY = prefs.getInt(KEY_PANEL_Y, -1)
@@ -89,5 +94,6 @@ class RulerSettings(context: Context) {
         private const val KEY_SPIN_FOLLOW = "spin_follow"
         private const val KEY_PANEL_X = "panel_x"
         private const val KEY_PANEL_Y = "panel_y"
+        private const val KEY_AUTO_TRACK = "auto_track"
     }
 }
