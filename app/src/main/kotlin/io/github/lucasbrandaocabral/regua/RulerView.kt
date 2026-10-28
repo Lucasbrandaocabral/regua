@@ -97,6 +97,7 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
     private val foulPaint = strokePaint(RED, 2f)
     private val cueAfterPaint = strokePaint(Color.WHITE, 1.5f, dashed = true)
     private val autoCueAfterPaint = strokePaint(LILAC, 1.5f, dashed = true)
+    private val contactPaint = strokePaint(Color.WHITE, 1.5f, dashed = true)
     private val scratchPaint = strokePaint(RED, 2f, dashed = true)
     private val ghostPaint = strokePaint(Color.WHITE, 1.5f, dashed = true)
     private val cueMarkerPaint = strokePaint(Color.WHITE, 1.5f)
@@ -182,8 +183,9 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         val aim = autoAim ?: return
         val table = table()
         val r = table.ballRadius
-        val targetBall = if (settings.targetEnabled) aim.objectBall else null
-        val shot = ShotSolver.solve(table, aim.cue, aim.direction, targetBall, settings.cushions, spin())
+        // A bola que o anel do jogo toca é sempre a bola alvo aqui (o botão de alvo é do modo manual);
+        // as outras bolas achadas na mesa param as linhas que chegarem nelas.
+        val shot = ShotSolver.solve(table, aim.cue, aim.direction, aim.objectBall, settings.cushions, spin(), aim.balls)
 
         canvas.save()
         clipOutCircle(canvas, aim.cue, 1.6 * r)
@@ -192,17 +194,34 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
             clipOutCircle(canvas, ghost, 3 * r)
             aim.objectBall?.let { o -> clipOutBand(canvas, o, o + (o - ghost).normalized() * aim.objectGuideLength, 0.5 * r) }
         }
-        val cuePaint = when {
-            shot.cue.end != PathEnd.POCKET -> cuePathPaint
-            targetBall != null -> foulPaint
-            else -> pottedPaint
-        }
+        // Branca caindo direto numa caçapa, sem tocar em bola nenhuma, é falta.
+        val cuePaint = if (shot.cue.end == PathEnd.POCKET) foulPaint else cuePathPaint
         drawPath(canvas, shot.cue, cuePaint, skip = aim.guideLength + 0.6 * r)
+        drawContact(canvas, shot.cue, cuePaint, r)
         shot.objectBall?.let {
-            drawPath(canvas, it, if (it.end == PathEnd.POCKET) pottedPaint else objectPathPaint, skip = max(1.5 * r, aim.objectGuideLength + 0.6 * r))
+            val paint = if (it.end == PathEnd.POCKET) pottedPaint else objectPathPaint
+            drawPath(canvas, it, paint, skip = max(1.5 * r, aim.objectGuideLength + 0.6 * r))
+            drawContact(canvas, it, paint, r)
         }
-        shot.cueAfter?.let { drawPath(canvas, it, if (it.end == PathEnd.POCKET) scratchPaint else autoCueAfterPaint, skip = r) }
+        shot.combo?.let {
+            val paint = if (it.end == PathEnd.POCKET) pottedPaint else objectPathPaint
+            drawPath(canvas, it, paint, skip = r)
+            drawContact(canvas, it, paint, r)
+        }
+        shot.cueAfter?.let {
+            val paint = if (it.end == PathEnd.POCKET) scratchPaint else autoCueAfterPaint
+            drawPath(canvas, it, paint, skip = r)
+            drawContact(canvas, it, paint, r)
+        }
         canvas.restore()
+    }
+
+    /** Se o caminho termina encostando numa bola, marca onde a bola em movimento fica no choque. */
+    private fun drawContact(canvas: Canvas, ball: BallPath, paint: Paint, r: Double) {
+        if (ball.end != PathEnd.BALL) return
+        val p = ball.points.last()
+        contactPaint.color = paint.color
+        stroke(contactPaint) { canvas.drawCircle(p.x.f, p.y.f, r.f, it) }
     }
 
     private fun clipOutCircle(canvas: Canvas, c: Vec2, radius: Double) {

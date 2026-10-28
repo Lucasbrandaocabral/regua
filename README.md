@@ -36,8 +36,10 @@ Funciona no Android 8 ou mais novo. No iPhone não é possível: o iOS não deix
 O botão **AUTO** do painel mostra o estado: verde = seguindo a linha; amarelo = a linha do jogo não está
 aparecendo (vez do adversário, bolas andando); cinza = desligado (toque para ligar de novo).
 
-A régua só enxerga a branca, a linha de mira, o círculo de choque e a bola que esse círculo toca. Se houver
-outra bola no caminho depois do fim da linha do jogo, ela não sabe. Os quadros da tela são analisados no
+A bola que o círculo do jogo toca é sempre a bola alvo no automático (o botão de alvo só vale no manual).
+A régua também acha as outras bolas paradas na mesa: as linhas param quando chegam numa delas (com um
+círculo tracejado onde encostam) e, se a bola alvo bater em outra bola, ela mostra para onde essa outra vai
+(combinação). No triângulo fechado da saída as posições das bolas são aproximadas. Os quadros da tela são analisados no
 próprio celular, só na hora: nada é salvo nem enviado. O Android mostra o aviso de gravação enquanto o
 automático está ligado, e no Android 15 ou mais novo o jogo consegue saber que a tela está sendo gravada.
 

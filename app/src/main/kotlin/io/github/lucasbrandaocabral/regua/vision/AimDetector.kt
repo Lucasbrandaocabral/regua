@@ -35,12 +35,18 @@ class AimDetector {
         val objectBall: Vec2?,
         /** Até onde aparece a linha que o jogo desenha saindo da bola alvo, medido do centro dela. */
         val objectGuideLength: Double,
+        /** Centros das outras bolas paradas na mesa (sem a branca e sem a bola alvo). */
+        val balls: List<Vec2> = emptyList(),
     )
 
     /** Reta ajustada num traço: passa por [origin] na direção [direction] e o traço acaba em [end]. */
     private class Line(val origin: Vec2, val direction: Vec2, val end: Vec2)
 
     private var integral = IntArray(0)
+    private val ballFinder = BallFinder()
+    private var cachedBalls = emptyList<Vec2>()
+    private var cachedBallsCue: Vec2? = null
+    private var framesSinceBalls = 0
 
     /**
      * [previous] é o resultado do quadro anterior: a branca quase nunca muda de lugar enquanto se mira
@@ -73,6 +79,12 @@ class AimDetector {
         // Anel colado na tabela é a branca batendo na tabela, não numa bola.
         val ghost = ring?.takeIf { insideInner(table, it, 0.6 * r) }
         val objectBall = if (ghost != null && findObjectBall) findObjectBall(frame, table, ghost, direction) else null
+        val balls = otherBalls(frame, table, cue).filter { b ->
+            b.distanceTo(cue) > CUE_EXCLUSION * r &&
+                objectBall?.let { b.distanceTo(it.origin) > 1.2 * r } != false &&
+                ghost?.let { b.distanceTo(it) > 1.6 * r } != false &&
+                !onCueStick(b, cue, direction, r)
+        }
         return Result(
             cue = cue,
             direction = direction,
@@ -80,7 +92,35 @@ class AimDetector {
             ghost = ghost,
             objectBall = objectBall?.origin,
             objectGuideLength = objectBall?.let { (it.end - it.origin) dot it.direction } ?: 0.0,
+            balls = balls,
         )
+    }
+
+    /**
+     * O taco fica atrás da branca, na direção oposta à mira; tacos enfeitados têm pedaços do tamanho
+     * de uma bola que não podem virar obstáculo.
+     */
+    private fun onCueStick(b: Vec2, cue: Vec2, direction: Vec2, r: Double): Boolean {
+        val d = b - cue
+        val behind = -(d dot direction)
+        val across = kotlin.math.abs(d.x * direction.y - d.y * direction.x)
+        return behind > 0 && across < 1.3 * r
+    }
+
+    /**
+     * As bolas só mudam de lugar depois de uma tacada (e aí a branca também muda), então enquanto a
+     * branca está parada reaproveita a última busca e só refaz de vez em quando.
+     */
+    private fun otherBalls(frame: Frame, table: Table, cue: Vec2): List<Vec2> {
+        val lastCue = cachedBallsCue
+        if (lastCue != null && lastCue.distanceTo(cue) < 3.0 && framesSinceBalls < BALL_REFRESH_FRAMES) {
+            framesSinceBalls++
+            return cachedBalls
+        }
+        cachedBalls = ballFinder.find(frame, table)
+        cachedBallsCue = cue
+        framesSinceBalls = 0
+        return cachedBalls
     }
 
     /**
@@ -259,9 +299,11 @@ class AimDetector {
      */
     private fun fitLine(frame: Frame, table: Table, origin: Vec2, approxAngle: Double, start: Double, minSamples: Int): Line? {
         val r = table.ballRadius
-        val wide = collectAndFit(frame, table, origin, Vec2.ofAngle(approxAngle), start, minSamples, tolerance = 1.2 * r)
+        // Tolera buracos maiores: uma linha da própria régua pode cruzar a do jogo.
+        val gap = max(10.0, r)
+        val wide = collectAndFit(frame, table, origin, Vec2.ofAngle(approxAngle), start, minSamples, tolerance = 1.2 * r, gap = gap)
             ?: return null
-        return collectAndFit(frame, table, wide.origin, wide.direction, start, minSamples) ?: wide
+        return collectAndFit(frame, table, wide.origin, wide.direction, start, minSamples, gap = gap) ?: wide
     }
 
     /**
@@ -280,6 +322,7 @@ class AimDetector {
         minSamples: Int,
         stopAt: Double = Double.POSITIVE_INFINITY,
         tolerance: Double = max(2.0, 0.15 * table.ballRadius),
+        gap: Double = max(8.0, 0.45 * table.ballRadius),
     ): Line? {
         val r = table.ballRadius
         val horizontal = kotlin.math.abs(u.x) >= kotlin.math.abs(u.y)
@@ -290,7 +333,6 @@ class AimDetector {
         val stretch = 1.0 / kotlin.math.abs(major)
         val tol = (tolerance * stretch).roundToInt()
         val maxCore = (max(3.0, 0.3 * r) * stretch).roundToInt()
-        val gap = max(8.0, 0.45 * r)
         fun white(m: Int, k: Int) = if (horizontal) frame.isWhite(m, k) else frame.isWhite(k, m)
 
         val capacity = (table.width + table.bottom - table.top).toInt() + 1
@@ -510,6 +552,12 @@ class AimDetector {
     private companion object {
         /** Fração do quadrado central que precisa ser branca para ser a bola branca. */
         const val MIN_CUE_FILL = 0.6
+
+        /** Raio (em raios de bola) em volta da branca onde não procura outras bolas (a mão do jogo fica ali). */
+        const val CUE_EXCLUSION = 2.2
+
+        /** De quantos em quantos quadros refaz a busca das outras bolas com a branca parada. */
+        const val BALL_REFRESH_FRAMES = 8
 
         /** Quanto a linha pode ter girado desde o quadro anterior. */
         const val HINT_DEGREES = 15

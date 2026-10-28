@@ -31,9 +31,6 @@ class ScreenTracker(
     @Volatile
     var table: Table? = null
 
-    @Volatile
-    var findObjectBall = true
-
     private val thread = HandlerThread("regua-tracker").apply { start() }
     private val worker = Handler(thread.looper)
     private val main = Handler(Looper.getMainLooper())
@@ -148,7 +145,7 @@ class ScreenTracker(
             image.close()
         }
 
-        val result = detector.detect(frame, scaledTable, findObjectBall, previous)
+        val result = detector.detect(frame, scaledTable, previous = previous)
         previous = result
         val onScreen = result?.let { scaled(it, 1 / scale) }
         main.post { if (!stopped) onResult(onScreen) }
@@ -178,6 +175,7 @@ class ScreenTracker(
         ghost = r.ghost?.let { it * k },
         objectBall = r.objectBall?.let { it * k },
         objectGuideLength = r.objectGuideLength * k,
+        balls = r.balls.map { it * k },
     )
 
     private companion object {

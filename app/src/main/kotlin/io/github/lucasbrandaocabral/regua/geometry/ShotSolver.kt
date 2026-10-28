@@ -53,6 +53,8 @@ class Shot(
     val cueAfter: BallPath? = null,
     /** Ângulo de corte em graus: 0 é bola cheia, perto de 90 é bem fina. */
     val cutAngle: Double? = null,
+    /** Caminho da bola que a bola alvo acerta em seguida (combinação), quando acerta. */
+    val combo: BallPath? = null,
 ) {
     /** Onde está o centro da branca no instante do choque. */
     val ghost: Vec2? get() = if (cue.end == PathEnd.BALL) cue.points.last() else null
@@ -74,18 +76,34 @@ object ShotSolver {
     private const val SIDE_SPIN_DECAY = 0.5
 
     /**
-     * Calcula a tacada: a branca sai de [cue] na direção [aim], pode tabelar até [cushions] vezes e,
-     * se encostar em [target], calcula também o caminho da bola alvo e o da branca depois do choque.
+     * Calcula a tacada: a branca sai de [cue] na direção [aim] e pode tabelar até [cushions] vezes.
+     * A primeira bola que ela encostar ([target] ou uma das [obstacles], as outras bolas da mesa)
+     * vira a bola alvo: calcula o caminho dela, o da branca depois do choque e, se a bola alvo
+     * acertar outra bola, o caminho dessa outra (combinação). Os caminhos param na bola que encostarem.
      */
-    fun solve(table: Table, cue: Vec2, aim: Vec2, target: Vec2?, cushions: Int, spin: Spin = Spin.NONE): Shot {
-        val cuePath = trace(table, cue, aim, cushions, listOfNotNull(target), sideSpin = spin.side)
+    fun solve(
+        table: Table,
+        cue: Vec2,
+        aim: Vec2,
+        target: Vec2?,
+        cushions: Int,
+        spin: Spin = Spin.NONE,
+        obstacles: List<Vec2> = emptyList(),
+    ): Shot {
+        val balls = listOfNotNull(target) + obstacles
+        val cuePath = trace(table, cue, aim, cushions, balls, sideSpin = spin.side)
         val hit = cuePath.hitBall ?: return Shot(cuePath)
+        val others = balls.filter { it != hit }
         val ghost = cuePath.points.last()
         val incoming = cuePath.direction
         // A bola alvo sai na linha que liga os dois centros no momento do choque.
         val objectDir = (hit - ghost).normalized()
         val cosCut = (incoming dot objectDir).coerceIn(-1.0, 1.0)
-        val objectPath = trace(table, hit, objectDir, cushions)
+        val objectPath = trace(table, hit, objectDir, cushions, others)
+        val combo = objectPath.hitBall?.let { second ->
+            val contact = objectPath.points.last()
+            trace(table, second, (second - contact).normalized(), cushions, others.filter { it != second })
+        }
 
         // Sem efeito a branca sai a 90° da bola alvo (só sobra a parte tangente da velocidade);
         // efeito em cima/embaixo soma ou tira velocidade na direção da bola alvo.
@@ -94,13 +112,13 @@ object ShotSolver {
         val travel = cueOut.length
         val cueAfter = if (travel > MIN_CUE_TRAVEL) {
             trace(
-                table, ghost, cueOut, min(cushions, 2),
+                table, ghost, cueOut, min(cushions, 2), others,
                 sideSpin = spin.side, maxLength = table.width * min(1.0, travel),
             )
         } else {
             null
         }
-        return Shot(cuePath, objectPath, cueAfter, Math.toDegrees(acos(cosCut)))
+        return Shot(cuePath, objectPath, cueAfter, Math.toDegrees(acos(cosCut)), combo)
     }
 
     /**

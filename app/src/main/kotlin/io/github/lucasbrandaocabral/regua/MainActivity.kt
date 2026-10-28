@@ -113,7 +113,7 @@ class MainActivity : Activity() {
         column.addView(
             text(
                 """
-                Automático (AUTO verde no painel): é só jogar. A régua acha a bola branca e a linha branca do jogo e continua a linha dele: tabelas da branca em amarelo, a bola alvo em azul (verde quando cai) e a branca depois do choque em lilás (vermelha se ela também cai). AUTO amarelo quer dizer que a linha do jogo não está aparecendo (vez do adversário, bolas andando).
+                Automático (AUTO verde no painel): é só jogar. A régua acha a bola branca e a linha branca do jogo e continua a linha dele: tabelas da branca em amarelo, a bola alvo em azul (verde quando cai) e a branca depois do choque em lilás (vermelha se ela também cai). A bola que o círculo do jogo toca é sempre a bola alvo, e as linhas param nas outras bolas da mesa (círculo tracejado); se a bola alvo bater em outra, a régua mostra para onde essa outra vai. AUTO amarelo quer dizer que a linha do jogo não está aparecendo (vez do adversário, bolas andando).
 
                 Manual:
                 1. Toque em MIRAR. Arraste o círculo branco até a bola branca e o círculo laranja até a bola que você quer encaçapar. Arraste em qualquer outro lugar para girar a linha.
@@ -131,7 +131,7 @@ class MainActivity : Activity() {
                 AUTO: liga/desliga a mira automática (pede para gravar a tela).
                 Setas redondas: giram a linha bem devagar (segure para girar sem parar).
                 Número "tab.": quantas tabelas a linha mostra (0 a 5).
-                Alvo: liga ou desliga a bola alvo.
+                Alvo: liga ou desliga a bola alvo do modo manual.
                 Bolinha com ponto vermelho: efeito. Marque o mesmo ponto que você marcou no jogo. Efeito em cima/embaixo muda a branca depois do choque; efeito lateral muda o ângulo nas tabelas. É uma estimativa.
                 Mesa: calibração. X: fecha a régua.
                 A força da tacada não muda a direção das linhas, só até onde as bolas chegam.

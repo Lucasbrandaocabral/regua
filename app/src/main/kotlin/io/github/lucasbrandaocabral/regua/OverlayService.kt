@@ -162,7 +162,6 @@ class OverlayService : Service(), ControlPanel.Actions {
 
     override fun toggleTarget() {
         settings.targetEnabled = !settings.targetEnabled
-        tracker?.findObjectBall = settings.targetEnabled
         changed()
     }
 
@@ -241,7 +240,6 @@ class OverlayService : Service(), ControlPanel.Actions {
         }
         val metrics = realMetrics()
         tracker = ScreenTracker(projection, ::onAim, ::onTrackingStopped).also {
-            it.findObjectBall = settings.targetEnabled
             it.start(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
         }
         ruler.autoTracking = true
@@ -307,6 +305,7 @@ class OverlayService : Service(), ControlPanel.Actions {
         ghost = r.ghost?.let { it - overlayOffset },
         objectBall = r.objectBall?.let { it - overlayOffset },
         objectGuideLength = r.objectGuideLength,
+        balls = r.balls.map { it - overlayOffset },
     )
 
     @Suppress("DEPRECATION")
