@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Regua" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">@color/regua_accent</item>
+        <item name="android:colorAccent">@color/regua_accent</item>
+        <item name="android:windowBackground">@color/regua_background</item>
+        <item name="android:statusBarColor">@color/regua_background</item>
+        <item name="android:navigationBarColor">@color/regua_background</item>
+    </style>
+</resources>

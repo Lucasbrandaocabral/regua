@@ -1,0 +1,34 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Tabela de cima -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M28,30L80,30"
+        android:strokeWidth="4"
+        android:strokeColor="#FF7FD3FF"
+        android:strokeLineCap="round" />
+    <!-- Caçapa -->
+    <path
+        android:fillColor="#FF06263A"
+        android:pathData="M68,74a8,8 0,1 0,16 0a8,8 0,1 0,-16 0" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M68,74a8,8 0,1 0,16 0a8,8 0,1 0,-16 0"
+        android:strokeWidth="2.5"
+        android:strokeColor="#FF00E676" />
+    <!-- Rota com uma tabela -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M34,72L54,37L76,74"
+        android:strokeWidth="4"
+        android:strokeColor="#FFFFEB3B"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Bola branca -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M26,72a8,8 0,1 0,16 0a8,8 0,1 0,-16 0" />
+</vector>
