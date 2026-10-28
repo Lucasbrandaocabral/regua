@@ -23,6 +23,12 @@ ela usa a gravação de tela do Android para achar a linha branca do jogo (veja 
 
 Funciona no Android 8 ou mais novo. No iPhone não é possível: o iOS não deixa um app desenhar por cima de outro.
 
+### No PC (Google Play Games)
+
+Há uma versão para Windows, em Python, que faz o mesmo por cima da janela do jogo no Google Play Games:
+baixe <https://github.com/Lucasbrandaocabral/Regua/releases/download/apk/Regua-PC.exe> e veja
+[pc/README.md](pc/README.md).
+
 ## Usar
 
 ### Automático

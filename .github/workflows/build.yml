@@ -1,4 +1,4 @@
-name: APK
+name: APK e PC
 
 on:
   push:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,15 +36,49 @@ jobs:
           name: regua-apk
           path: regua.apk
 
-      # Mantém sempre o APK mais novo no mesmo link:
-      # https://github.com/<dono>/<repo>/releases/download/apk/regua.apk
+  pc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependências
+        run: pip install -r pc/requirements.txt pytest pyinstaller
+
+      - name: Testes
+        run: python -m pytest -q pc/tests
+
+      - name: Executável
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name Regua-PC
+          --icon pc/assets/regua.ico --paths pc --hidden-import mss.windows pc/regua.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regua-pc
+          path: dist/Regua-PC.exe
+
+  # Mantém sempre os arquivos mais novos nos mesmos links:
+  # https://github.com/<dono>/<repo>/releases/download/apk/regua.apk
+  # https://github.com/<dono>/<repo>/releases/download/apk/Regua-PC.exe
+  publish:
+    needs: [android, pc]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+
       - name: Publicar na release "apk"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           gh release delete apk --yes --cleanup-tag || true
-          gh release create apk regua.apk \
+          gh release create apk out/regua-apk/regua.apk out/regua-pc/Regua-PC.exe \
             --target "$GITHUB_SHA" \
             --title "Régua (última versão)" \
-            --notes "APK gerado automaticamente a partir de $GITHUB_REF_NAME ($GITHUB_SHA). Baixe regua.apk no celular e instale."
+            --notes "Gerado automaticamente a partir de $GITHUB_REF_NAME ($GITHUB_SHA). Celular: baixe regua.apk e instale. PC (Google Play Games): baixe Regua-PC.exe e abra."
