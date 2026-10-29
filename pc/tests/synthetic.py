@@ -55,6 +55,12 @@ class SyntheticTable:
         self.pixels[self._disc(c, 0.45 * r)] = (245, 245, 240)
         self.pixels[self._disc(c, 0.15 * r)] = (10, 10, 10)
 
+    def stripe_ball_white_up(self, c: Vec2, color):
+        """Listrada com o lado branco para cima: miolo branco e a cor só na borda."""
+        self.pixels[self._disc(c, self.r + 1)] = (20, 20, 20)
+        self.pixels[self._disc(c, self.r)] = color
+        self.pixels[self._disc(c, 0.8 * self.r)] = (250, 250, 248)
+
     def cue_ball(self, c: Vec2):
         r = self.r
         self.pixels[self._disc(c, r + 1)] = (30, 30, 30)
@@ -62,6 +68,11 @@ class SyntheticTable:
         t = np.maximum(0.0, ((self._xx - c.x) + (self._yy - c.y)) / (2 * r))[..., None]
         col = np.array([252, 244, 225]) + (np.array([200, 206, 216]) - np.array([252, 244, 225])) * t
         self.pixels[inside] = col[inside]
+
+    def _paint(self, d: np.ndarray, half: float, color):
+        """Pinta onde ``d`` (distância ao traço) é menor que ``half``, com a borda suavizada como no jogo."""
+        alpha = np.clip(half + 0.5 - d, 0, 1)[..., None]
+        self.pixels = self.pixels * (1 - alpha) + np.array(color, dtype=np.float32) * alpha
 
     def stroke(self, a: Vec2, b: Vec2, half: float, color):
         ab = b - a
@@ -71,7 +82,7 @@ class SyntheticTable:
         else:
             t = np.clip(((self._xx - a.x) * ab.x + (self._yy - a.y) * ab.y) / len2, 0, 1)
             d = np.hypot(self._xx - (a.x + ab.x * t), self._yy - (a.y + ab.y * t))
-        self.pixels[d <= half] = color
+        self._paint(d, half, color)
 
     def guide(self, a: Vec2, b: Vec2):
         self.stroke(a, b, self.line_half + self.outline, (20, 30, 35))
@@ -79,16 +90,17 @@ class SyntheticTable:
 
     def ring(self, c: Vec2):
         d = np.abs(np.hypot(self._xx - c.x, self._yy - c.y) - self.r)
-        self.pixels[d <= self.line_half + self.outline] = (20, 30, 35)
-        self.pixels[d <= self.line_half] = (255, 255, 255)
+        self._paint(d, self.line_half + self.outline, (20, 30, 35))
+        self._paint(d, self.line_half, (255, 255, 255))
 
     def cue(self, c: Vec2, direction: Vec2, shaft=(140, 70, 30)):
         tip = c - direction * (self.r + 2)
         self.stroke(tip, tip - direction * (30 * self.r), 0.3 * self.r, shaft)
         self.stroke(tip, tip - direction * (0.6 * self.r), 0.3 * self.r, (240, 240, 235))
 
-    def aim_at(self, cue: Vec2, target: Vec2 | None, direction: Vec2):
-        """Tudo o que o jogo mostra quando a branca mira em ``direction`` e acerta ``target``."""
+    def aim_at(self, cue: Vec2, target: Vec2 | None, direction: Vec2, object_line: float = 6.0):
+        """Tudo o que o jogo mostra quando a branca mira em ``direction`` e acerta ``target``
+        (``object_line`` é o comprimento da linha da bola alvo, em raios: curta nos cortes finos)."""
         self.cue(cue, direction)
         self.cue_ball(cue)
         if target is None:
@@ -105,4 +117,4 @@ class SyntheticTable:
         self.ring(ghost)
         if tangent.length > 0:
             self.guide(ghost, ghost + tangent * (2.3 * self.r))
-        self.guide(target, target + n * (6 * self.r))
+        self.guide(target, target + n * (object_line * self.r))

@@ -8,7 +8,8 @@ transparente que não pega os cliques:
 - **azul**: a bola alvo (fica **verde** quando cai), parando na próxima bola que ela encostar e mostrando
   para onde essa outra vai (combinação);
 - **lilás**: a branca depois do choque (fica **vermelha** se ela também for cair);
-- **círculo tracejado**: onde uma bola encosta em outra.
+- **círculo tracejado**: onde uma bola encosta em outra, ou na ponta da boca de uma caçapa (aí a
+  linha não fica verde: a bola bate na boca e não cai limpa).
 
 É o mesmo cálculo e a mesma visão do app Android, portados para Python (NumPy + PySide6).
 

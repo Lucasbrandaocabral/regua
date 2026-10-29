@@ -58,17 +58,32 @@ class ShotSolverTest {
     }
 
     @Test
-    fun shallowApproachIsRejectedBySidePocket() {
-        // Chega no meio da tabela de cima quase paralela a ela: bate na quina e volta.
+    fun shallowApproachHitsTheSidePocketJaw() {
+        // Chega no meio da tabela de cima quase paralela a ela: cruza a boca depois da ponta de lá e bate nela.
         val path = ShotSolver.trace(table, Vec2(100.0, 30.0), Vec2(1.0, -0.2), maxCushions = 1)
-        assertVec(Vec2(200.0, 10.0), path.bounces.single())
-        assertTrue(path.pocket?.id != PocketId.TOP_MIDDLE)
+        assertEquals(PathEnd.JAW, path.end)
+        assertVec(Vec2(200.0, 10.0), path.points.last())
+        assertNull(path.pocket)
     }
 
     @Test
     fun steepApproachEntersSidePocket() {
-        val path = ShotSolver.trace(table, Vec2(180.0, 30.0), Vec2(1.0, -1.0), maxCushions = 1)
+        val path = ShotSolver.trace(table, Vec2(170.0, 30.0), Vec2(1.0, -1.0), maxCushions = 1)
         assertEquals(PocketId.TOP_MIDDLE, path.pocket?.id)
+    }
+
+    @Test
+    fun pocketJaws() {
+        // Reta na caçapa do meio: a boca tem 1,9 raio de cada lado, então o centro pode passar a até
+        // ~0,95 raio do meio sem encostar nas pontas.
+        assertEquals(PathEnd.POCKET, ShotSolver.trace(table, Vec2(208.0, 150.0), Vec2(0.0, -1.0), 3).end)
+        assertEquals(PathEnd.JAW, ShotSolver.trace(table, Vec2(212.0, 150.0), Vec2(0.0, -1.0), 3).end)
+        // Encostada na tabela de baixo até o canto: cai.
+        assertEquals(PocketId.BOTTOM_RIGHT, ShotSolver.trace(table, Vec2(200.0, 190.0), Vec2(1.0, 0.0), 3).pocket?.id)
+        // Encosta na tabela 2,5 raios antes do canto: ainda é borracha reta, então bate e volta.
+        val nearCorner = ShotSolver.trace(table, Vec2(375.0, 100.0), Vec2(0.0, 1.0), 1)
+        assertNull(nearCorner.pocket)
+        assertVec(Vec2(375.0, 190.0), nearCorner.bounces.single())
     }
 
     @Test
@@ -162,19 +177,36 @@ class ShotSolverTest {
 
     @Test
     fun firstBallOnTheWayBecomesTheTarget() {
-        // Outra bola no caminho antes do alvo marcado: é nela que a branca bate.
+        // Sem anel do jogo (sem alvo), a primeira bola no caminho é onde a branca bate.
         val shot = ShotSolver.solve(
-            table, cue = Vec2(50.0, 100.0), aim = Vec2(1.0, 0.0), target = Vec2(300.0, 100.0), cushions = 2,
-            obstacles = listOf(Vec2(150.0, 100.0)),
+            table, cue = Vec2(50.0, 100.0), aim = Vec2(1.0, 0.0), target = null, cushions = 2,
+            obstacles = listOf(Vec2(150.0, 100.0), Vec2(300.0, 100.0)),
         )
         assertEquals(Vec2(150.0, 100.0), shot.cue.hitBall)
         assertVec(Vec2(130.0, 100.0), shot.ghost!!)
-        // E a bola atingida segue reto até encostar no alvo marcado: combinação.
+        // E a bola atingida segue reto até encostar na outra: combinação.
         assertEquals(PathEnd.BALL, shot.objectBall!!.end)
         assertVec(Vec2(280.0, 100.0), shot.objectBall!!.points.last())
         val combo = shot.combo!!
         assertVec(Vec2(300.0, 100.0), combo.points.first())
         assertVec(Vec2(390.0, 100.0), combo.points.last())
+    }
+
+    @Test
+    fun targetFromTheGameWinsOverGrazingObstacle() {
+        // Como no print: a linha da branca passa a 1,9 raio de uma bola antes do anel. Pelas posições
+        // achadas ela encostaria, mas o anel do jogo mostra que passa e acerta o alvo.
+        val obstacle = Vec2(150.0, 119.0)
+        val shot = ShotSolver.solve(
+            table, cue = Vec2(50.0, 100.0), aim = Vec2(1.0, 0.0), target = Vec2(300.0, 105.0), cushions = 2,
+            obstacles = listOf(obstacle),
+        )
+        assertEquals(Vec2(300.0, 105.0), shot.cue.hitBall)
+        assertTrue(shot.ghost!!.x > 280.0)
+        assertNotNull(shot.objectBall)
+        // Sem alvo, a mesma bola para a branca.
+        val blind = ShotSolver.solve(table, Vec2(50.0, 100.0), Vec2(1.0, 0.0), null, 2, obstacles = listOf(obstacle))
+        assertEquals(obstacle, blind.cue.hitBall)
     }
 
     @Test

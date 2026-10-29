@@ -27,9 +27,23 @@ def test_bounce_keeps_angle():
 def test_corner_and_side_pockets():
     assert trace(TABLE, Vec2(200, 100), Vec2(-190, -90), 3).pocket.id is PocketId.TOP_LEFT
     assert trace(TABLE, Vec2(200, 150), Vec2(0, -1), 3).pocket.id is PocketId.TOP_MIDDLE
+    # Rasante na caçapa do meio: cruza a boca depois da ponta de lá e bate nela.
     shallow = trace(TABLE, Vec2(100, 30), Vec2(1, -0.2), 1)
-    assert close(shallow.bounces[0], Vec2(200, 10))
-    assert shallow.pocket is None or shallow.pocket.id is not PocketId.TOP_MIDDLE
+    assert shallow.end is PathEnd.JAW
+    assert close(shallow.points[-1], Vec2(200, 10))
+
+
+def test_pocket_jaws():
+    # Reta na caçapa do meio: a boca tem 1,9 raio de cada lado, então o centro pode passar a até
+    # ~0,95 raio do meio sem encostar nas pontas.
+    assert trace(TABLE, Vec2(208, 150), Vec2(0, -1), 3).end is PathEnd.POCKET
+    assert trace(TABLE, Vec2(212, 150), Vec2(0, -1), 3).end is PathEnd.JAW
+    # Encostada na tabela de baixo até o canto: cai.
+    assert trace(TABLE, Vec2(200, 190), Vec2(1, 0), 3).pocket.id is PocketId.BOTTOM_RIGHT
+    # Encosta na tabela 2,5 raios antes do canto: ainda é borracha reta, então bate e volta.
+    near_corner = trace(TABLE, Vec2(375, 100), Vec2(0, 1), 1)
+    assert near_corner.pocket is None
+    assert close(near_corner.bounces[0], Vec2(375, 190))
 
 
 def test_full_hit_and_cut():
@@ -53,10 +67,23 @@ def test_spin():
 
 
 def test_obstacles_and_combo():
-    shot = solve(TABLE, Vec2(50, 100), Vec2(1, 0), Vec2(300, 100), 2, obstacles=[Vec2(150, 100)])
+    # Sem anel do jogo (sem alvo), a primeira bola no caminho vira a bola alvo.
+    shot = solve(TABLE, Vec2(50, 100), Vec2(1, 0), None, 2, obstacles=[Vec2(150, 100), Vec2(300, 100)])
     assert shot.cue.hit_ball == Vec2(150, 100)
     assert shot.object_ball.end is PathEnd.BALL
     assert close(shot.combo.points[-1], Vec2(390, 100))
+
+
+def test_target_from_the_game_wins_over_grazing_obstacle():
+    # Como no print: a linha da branca passa a 1,9 raio de uma bola antes do anel. Pelas posições
+    # achadas ela encostaria, mas o anel do jogo mostra que passa e acerta o alvo.
+    obstacle = Vec2(150, 119)
+    shot = solve(TABLE, Vec2(50, 100), Vec2(1, 0), Vec2(300, 105), 2, obstacles=[obstacle])
+    assert shot.cue.hit_ball == Vec2(300, 105)
+    assert shot.cue.points[-1].x > 280
+    assert shot.object_ball is not None
+    # Sem alvo, a mesma bola para a branca.
+    assert solve(TABLE, Vec2(50, 100), Vec2(1, 0), None, 2, obstacles=[obstacle]).cue.hit_ball == obstacle
 
 
 def test_matches_android_numbers():

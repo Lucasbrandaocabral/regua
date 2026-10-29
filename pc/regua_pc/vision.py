@@ -15,11 +15,20 @@ from .balls import BallFinder
 from .geometry import Table, Vec2
 
 MIN_CUE_FILL = 0.6  # fração do quadrado central que precisa ser branca para ser a branca
+MAX_CUE_CANDIDATES = 6  # bolas brancas testadas (as listradas com o lado branco para cima também são)
+HOLLOW_RING = 0.4  # fração branca máxima no miolo do anel (a branca ou outra bola no fim da linha é cheia)
+WHITE_BASE = 150.0  # brancura (menor canal de cor) do pano mais claro; acima disso conta como traço
+RING_FIT_PX = 0.6  # pontos do anel mais longe que isso do círculo ajustado saem do ajuste
 HINT_DEGREES = 15  # quanto a linha pode ter girado desde o quadro anterior
+SHORT_GUIDE = 0.6  # em raios: traço mínimo da mira (com o anel quase encostado na branca)
+GUIDE_TRIES = 4  # raios de direções diferentes testados na busca da linha
+GUIDE_TRY_SPREAD = 3  # graus: raios mais perto que isso de um já testado são o mesmo traço
 OUTLIER_PX = 1.5  # distância máxima de um ponto até a reta para continuar no ajuste
 MIN_RING_SCORE = 0.55
 RING_SAMPLES = 48
 RING_SKIP_COS = math.cos(math.radians(25.0))
+CLOSE_RING = 3.6  # em raios: até onde procura um anel quase encostado na branca
+CLOSE_RING_STEP_DEG = 2.0
 OBJECT_CANDIDATES = 89
 OBJECT_STEP_DEG = 2.0
 MIN_BALL_SCORE = 0.6
@@ -93,25 +102,14 @@ class AimDetector:
         self._white = self._white_in_table(rgb, table)
         self._wbytes = self._white.tobytes()
 
-        rough = None
-        if previous is not None:
-            rough = self._find_cue_ball(previous.cue)
-        if rough is None:
-            rough = self._find_cue_ball(None)
-        if rough is None:
-            return None
-        guide = None
-        if previous is not None:
-            guide = self._find_guide(rough, math.degrees(math.atan2(previous.direction.y, previous.direction.x)))
-        if guide is None:
-            guide = self._find_guide(rough, None)
-        if guide is None:
+        hint = math.degrees(math.atan2(previous.direction.y, previous.direction.x)) if previous else None
+        aim = self._find_aim(previous.cue if previous else None, hint)
+        if aim is None:
             return None
 
+        guide, cue, ring, rough = aim
         direction = guide.direction
-        cue = self._cue_center_on_line(guide.origin, direction, r)
         guide_length = (guide.end - cue).dot(direction)
-        ring = self._find_ghost(cue, direction, guide_length, r)
         if ring is not None:
             # Dentro do anel a linha se mistura com ele: refaz o ajuste só com o trecho limpo.
             ring_distance = (ring - cue).dot(direction)
@@ -120,6 +118,16 @@ class AimDetector:
                 direction = clean.direction
                 cue = self._cue_center_on_line(clean.origin, direction, r)
                 ring = self._find_ghost(cue, direction, ring_distance, r) or ring
+                # A bola fantasma fica na reta da mira, que aqui é mais precisa que o anel.
+                center = self._ring_center(direction, ring, r)
+                ring = cue + direction * (center - cue).dot(direction)
+            else:
+                # Anel quase encostado na branca: o traço é curto demais para dar a direção, que passa
+                # a ser a do centro da branca ao centro do anel. A linha achada pode ser um raio torto
+                # que também chega no anel, então o centro da branca sai do branco dela, não da linha.
+                ring = self._ring_center(direction, ring, r)
+                cue = self._cue_on_short_guide(rough, ring, r)
+                direction = (ring - cue).normalized()
             guide_length = (ring - cue).dot(direction)
         # Anel colado na tabela é a branca batendo na tabela, não numa bola.
         ghost = ring if ring is not None and self._inside_inner(ring, 0.6 * r) else None
@@ -166,18 +174,60 @@ class AimDetector:
 
     # --- branca ---
 
-    def _find_cue_ball(self, near: Vec2 | None) -> Vec2 | None:
-        """A branca é onde um quadrado do tamanho do miolo da bola fica mais cheio de branco."""
+    def _find_aim(self, near: Vec2 | None, hint: float | None) -> tuple[_Line, Vec2, Vec2 | None, Vec2] | None:
+        """A branca é a bola branca de onde sai a linha de mira: das listradas com o lado branco para
+        cima não sai linha. Se mais de uma tiver linha (a da bola alvo volta pela mira numa tacada
+        reta), vale a que termina num anel oco; um traço curto só vale se terminar nele. Se nenhuma
+        linha achada acaba num anel, procura um anel quase encostado numa delas. ``near`` é a branca do
+        quadro anterior (testada primeiro) e ``hint`` a direção da mira nele, em graus. Devolve a
+        linha, o centro da branca nela, o anel e o centro da branca achado só pelo branco."""
+        r = self._table.ball_radius
+        candidates = [c for c in self._cue_candidates() if self._line_leaves(c, r)]
+        if near is not None:
+            candidates.sort(key=lambda c: c.distance_to(near) > 3 * r)
+        fallback = None
+        for rough in candidates:
+            guide = (self._find_guide(rough, hint) if hint is not None else None) or self._find_guide(rough, None)
+            if guide is None:
+                continue
+            cue = self._cue_center_on_line(guide.origin, guide.direction, r)
+            length = (guide.end - cue).dot(guide.direction)
+            ring = self._find_ghost(cue, guide.direction, length, r)
+            if ring is not None and self._white_fraction(ring, 0.5 * r) < HOLLOW_RING:
+                return guide, cue, ring, rough
+            if length - 1.5 * r >= self._min_guide_samples():
+                fallback = fallback or (guide, cue, ring, rough)
+        for rough in candidates:
+            ring = self._find_close_ring(rough, r)
+            if ring is not None:
+                u = (ring - rough).normalized()
+                return _Line(rough, u, ring), self._cue_center_on_line(rough, u, r), ring, rough
+        return fallback
+
+    def _line_leaves(self, c: Vec2, r: float) -> bool:
+        """Teste barato antes da busca da linha: uma linha que sai da bola cruza pelo menos dois dos
+        círculos de 1,5 a 2,4 raios em volta dela. Não todos: com o anel perto da branca, um deles
+        pode cair inteiro no contorno escuro do anel."""
+        crossed = 0
+        for radius in (1.5 * r, 1.8 * r, 2.1 * r, 2.4 * r):
+            n = int(2 * math.pi * radius) + 1
+            a = np.arange(n) * (2 * math.pi / n)
+            xs = np.rint(c.x + np.cos(a) * radius).astype(int)
+            ys = np.rint(c.y + np.sin(a) * radius).astype(int)
+            inb = (xs >= 0) & (xs < self._w) & (ys >= 0) & (ys < self._h)
+            crossed += bool(self._white[ys[inb], xs[inb]].any())
+        return crossed >= 2
+
+    def _cue_candidates(self) -> list[Vec2]:
+        """Lugares onde um quadrado do tamanho do miolo da bola fica cheio de branco, do mais cheio para
+        o menos (até ``MAX_CUE_CANDIDATES``)."""
         t = self._table
         r = t.ball_radius
         half = max(2, int(round(0.6 * r)))
-        reach = 3 * r
-        x0 = max(0, int(max(t.min_x, (near.x if near else t.min_x) - reach)))
-        x1 = min(self._w - 1, int(math.ceil(min(t.max_x, (near.x if near else t.max_x) + reach))))
-        y0 = max(0, int(max(t.min_y, (near.y if near else t.min_y) - reach)))
-        y1 = min(self._h - 1, int(math.ceil(min(t.max_y, (near.y if near else t.max_y) + reach))))
+        x0, x1 = max(0, int(t.min_x)), min(self._w - 1, int(math.ceil(t.max_x)))
+        y0, y1 = max(0, int(t.min_y)), min(self._h - 1, int(math.ceil(t.max_y)))
         if x1 <= x0 or y1 <= y0:
-            return None
+            return []
         ix0, iy0 = max(0, x0 - half), max(0, y0 - half)
         ix1, iy1 = min(self._w - 1, x1 + half), min(self._h - 1, y1 + half)
         region = self._white[iy0:iy1 + 1, ix0:ix1 + 1].astype(np.int32)
@@ -190,15 +240,23 @@ class AimDetector:
         bottom = np.clip(cys + half - iy0 + 1, 0, h)[:, None]
         left = np.clip(cxs - half - ix0, 0, w)[None, :]
         right = np.clip(cxs + half - ix0 + 1, 0, w)[None, :]
-        sums = integral[bottom, right] - integral[top, right] - integral[bottom, left] + integral[top, left]
-        j, i = np.unravel_index(int(np.argmax(sums)), sums.shape)
+        sums = (integral[bottom, right] - integral[top, right] - integral[bottom, left] + integral[top, left]).ravel()
         side = 2 * half + 1
-        if sums[j, i] < MIN_CUE_FILL * side * side:
-            return None
-        center = Vec2(float(cxs[i]), float(cys[j]))
-        for _ in range(2):
-            center = self._white_centroid(center, 0.85 * r) or center
-        return center
+        full = np.nonzero(sums >= MIN_CUE_FILL * side * side)[0]
+        peaks: list[Vec2] = []
+        for k in full[np.argsort(-sums[full], kind="stable")]:
+            j, i = divmod(int(k), len(cxs))
+            p = Vec2(float(cxs[i]), float(cys[j]))
+            if all(p.distance_to(q) >= 1.5 * r for q in peaks):
+                peaks.append(p)
+                if len(peaks) == MAX_CUE_CANDIDATES:
+                    break
+        centers = []
+        for center in peaks:
+            for _ in range(2):
+                center = self._white_centroid(center, 0.85 * r) or center
+            centers.append(center)
+        return centers
 
     def _disc(self, c: Vec2, radius: float):
         xs = np.arange(int(math.floor(c.x - radius)), int(math.ceil(c.x + radius)) + 1)
@@ -207,6 +265,10 @@ class AimDetector:
         inside = ((gx - c.x) ** 2 + (gy - c.y) ** 2 <= radius * radius)
         inside &= (gx >= 0) & (gx < self._w) & (gy >= 0) & (gy < self._h)
         return gx[inside], gy[inside]
+
+    def _white_fraction(self, c: Vec2, radius: float) -> float:
+        xs, ys = self._disc(c, radius)
+        return float((self._white[ys, xs] == 1).mean()) if len(xs) else 0.0
 
     def _white_centroid(self, c: Vec2, radius: float) -> Vec2 | None:
         xs, ys = self._disc(c, radius)
@@ -268,11 +330,13 @@ class AimDetector:
         return 0.0 if last < 0 else last - start
 
     def _find_guide(self, cue: Vec2, around_degrees: float | None) -> _Line | None:
-        """O raio que segue um traço branco fino por mais tempo a partir da branca (com raios
-        paralelos deslocados, porque o centro achado pode estar fora da linha)."""
+        """Os raios que seguem um traço branco fino por mais tempo a partir da branca (com raios
+        paralelos deslocados, porque o centro achado pode estar fora da linha), do mais comprido para
+        o menos: vale o primeiro que dá uma reta passando pela branca. Com o anel quase encostado na
+        branca o traço é curto, e um raio torto que cruza o anel e a linha da tangente pode ir mais
+        longe que ele."""
         r = self._table.ball_radius
         start = 1.5 * r
-        min_samples = self._min_guide_samples()
         if around_degrees is None:
             degrees = range(360)
             offsets = (0.0, -0.5 * r, 0.5 * r, -r, r)
@@ -281,23 +345,38 @@ class AimDetector:
             c = int(round(around_degrees))
             degrees = range(c - HINT_DEGREES, c + HINT_DEGREES + 1)
             offsets = (0.0,)
-        best_run, best_origin, best_angle = 0.0, cue, 0.0
+        runs = []
         for deg in degrees:
-            angle = math.radians(deg)
-            u = Vec2.of_angle(angle)
+            u = Vec2.of_angle(math.radians(deg))
             n = Vec2(-u.y, u.x)
             for offset in offsets:
                 origin = cue + n * offset
-                run = self._run_length(origin, u, start)
-                if run > best_run:
-                    best_run, best_origin, best_angle = run, origin, angle
-        if best_run < min_samples:
-            return None
-        stop_at = start + max(best_run - r, 0.6 * best_run)
-        wide = self._collect_and_fit(best_origin, Vec2.of_angle(best_angle), start, min_samples, stop_at, tolerance=0.6 * r)
-        if wide is None:
-            return None
-        return self._collect_and_fit(wide.origin, wide.direction, start, min_samples) or wide
+                runs.append((self._run_length(origin, u, start), deg, origin))
+        runs.sort(key=lambda run: -run[0])
+        min_run = max(6.0, SHORT_GUIDE * r)
+        tried: list[int] = []
+        for run, deg, origin in runs:
+            if run < min_run or len(tried) == GUIDE_TRIES:
+                break
+            if any(abs((deg - t + 180) % 360 - 180) <= GUIDE_TRY_SPREAD for t in tried):
+                continue
+            tried.append(deg)
+            # Traço curto: o cruzamento com o anel nunca é estreito e não entra na conta.
+            min_samples = min(self._min_guide_samples(), max(4.0, 0.3 * run))
+            u = Vec2.of_angle(math.radians(deg))
+            stop_at = start + max(run - r, 0.6 * run)
+            wide = self._collect_and_fit(origin, u, start, min_samples, stop_at, tolerance=0.6 * r)
+            if wide is None:
+                continue
+            line = self._collect_and_fit(wide.origin, wide.direction, start, min_samples) or wide
+            # A linha do jogo sai do centro da branca (que a mão do "bola na mão" pode tirar até um
+            # raio do lugar), e a reta ajustada tem de seguir o traço desde a borda dela (um ajuste
+            # que escorregou para a linha da tangente não segue).
+            off = cue - line.origin
+            if (abs(off.x * line.direction.y - off.y * line.direction.x) <= 1.2 * r
+                    and self._run_length(line.origin, line.direction, start) >= min_run):
+                return line
+        return None
 
     def _fit_line(self, origin: Vec2, approx_angle: float, start: float, min_samples: int) -> _Line | None:
         r = self._table.ball_radius
@@ -312,7 +391,8 @@ class AimDetector:
         stop_at: float = math.inf, tolerance: float | None = None, gap: float | None = None,
     ) -> _Line | None:
         """Anda pela reta (um pixel inteiro por vez no eixo em que ela mais avança) juntando o meio de
-        cada corte estreito do traço até ele acabar, e ajusta uma reta por mínimos quadrados."""
+        cada corte estreito do traço até ele acabar, e ajusta uma reta por mínimos quadrados.
+        ``min_samples`` é em pixels de comprimento do traço."""
         t = self._table
         r = t.ball_radius
         if tolerance is None:
@@ -323,6 +403,8 @@ class AimDetector:
         major = u.x if horizontal else u.y
         if abs(major) < 1e-9:
             return None
+        # Um corte por pixel do eixo principal: na diagonal são só ~0,7 cortes por pixel de traço.
+        min_samples = max(3, int(math.ceil(min_samples * abs(major))))
         slope = u.y / u.x if horizontal else u.x / u.y
         o_major, o_minor = (origin.x, origin.y) if horizontal else (origin.y, origin.x)
         stretch = 1.0 / abs(major)
@@ -451,6 +533,107 @@ class AimDetector:
         middle = float(ts[scores >= best - 0.03].mean())
         return cue + d * middle
 
+    def _find_close_ring(self, c: Vec2, r: float) -> Vec2 | None:
+        """Anel quase encostado na branca, quando o traço até ele é curto demais para a busca pela
+        linha: o círculo oco do tamanho da bola mais branco a até ``CLOSE_RING`` raios do centro
+        ``c``, com a linha da mira chegando no centro dele."""
+        thetas = np.radians(np.arange(0.0, 360.0, CLOSE_RING_STEP_DEG))
+        rhos = np.arange(2.2 * r, CLOSE_RING * r, 1.0)
+        cos_t, sin_t = np.cos(thetas), np.sin(thetas)
+        gx = c.x + cos_t[:, None] * rhos[None, :]
+        gy = c.y + sin_t[:, None] * rhos[None, :]
+        hits = np.zeros(gx.shape + (RING_SAMPLES,), dtype=bool)
+        for radius in (r - 2, r, r + 2):
+            sx = np.rint(gx[..., None] + _RING_COS * radius).astype(np.int32)
+            sy = np.rint(gy[..., None] + _RING_SIN * radius).astype(np.int32)
+            inb = (sx >= 0) & (sx < self._w) & (sy >= 0) & (sy < self._h)
+            hits[inb] |= self._white[sy[inb], sx[inb]] == 1
+        # Sem o lado virado para a branca, por onde entra a linha.
+        use = (_RING_COS[None, :] * -cos_t[:, None] + _RING_SIN[None, :] * -sin_t[:, None]) <= RING_SKIP_COS
+        scores = (hits & use[:, None, :]).sum(axis=2) / use.sum(axis=1)[:, None]
+        ia, ir = np.unravel_index(int(np.argmax(scores)), scores.shape)
+        if scores[ia, ir] < MIN_RING_SCORE:
+            return None
+        ring = Vec2(float(gx[ia, ir]), float(gy[ia, ir]))
+        if self._white_fraction(ring, 0.5 * r) >= HOLLOW_RING:
+            return None
+        ring = self._ring_center((ring - c).normalized(), ring, r)
+        # Dentro do anel, a linha da mira vem da branca até o centro.
+        u = (c - ring).normalized()
+        window = max(1, int(round(0.15 * r)))
+        max_core = max(3, int(round(0.3 * r)))
+        ss = np.arange(0.25 * r, 0.75 * r, 1.0)
+        on = sum(self._thin_white_at(ring.x + u.x * s, ring.y + u.y * s, -u.y, u.x, window, max_core) for s in ss)
+        return ring if on >= 0.7 * len(ss) else None
+
+    def _cue_on_short_guide(self, cue: Vec2, ring: Vec2, r: float) -> Vec2:
+        """Centro da branca na reta do traço curto entre ela e o anel. O centro achado pelo branco
+        sai um pouco do lugar (a linha e o contorno dela cobrem parte da bola) e, com o anel tão
+        perto, esse desvio de lado vira graus na direção da mira."""
+        u = (ring - cue).normalized()
+        line = self._collect_and_fit(cue, u, 0.5 * r, 4, stop_at=(ring - cue).length - 0.25 * r, tolerance=0.3 * r)
+        if line is None:
+            return cue
+        return self._cue_center_on_line(line.origin, line.direction, r)
+
+    def _ring_center(self, d: Vec2, ghost: Vec2, r: float) -> Vec2:
+        """Centro do anel com fração de pixel: círculo ajustado ao ponto mais branco de cada raio (sem
+        o lado de onde vem a linha, que tem a direção ``d``). A direção da bola alvo sai daqui, então
+        meio pixel errado aqui vira ângulo errado lá. Se o ajuste não convencer, devolve ``ghost``."""
+        use = (_RING_COS * -d.x + _RING_SIN * -d.y) <= RING_SKIP_COS
+        cos, sin = _RING_COS[use], _RING_SIN[use]
+        ss = np.arange(0.7 * r, 1.4 * r, 0.25)
+        xs = ghost.x + cos[:, None] * ss[None, :]
+        ys = ghost.y + sin[:, None] * ss[None, :]
+        w = self._whiteness(xs, ys)
+        # Só em volta do pico de cada raio: as linhas que cruzam o anel são brancas no raio todo.
+        w = np.where(np.abs(ss[None, :] - ss[np.argmax(w, axis=1)][:, None]) <= 1.5, np.clip(w - WHITE_BASE, 0, None), 0)
+        total = w.sum(axis=1)
+        ok = total > 0
+        radius = (w[ok] * ss).sum(axis=1) / total[ok]
+        px, py = ghost.x + cos[ok] * radius, ghost.y + sin[ok] * radius
+        keep = np.ones(len(px), dtype=bool)
+        for _ in range(3):
+            if keep.sum() < RING_SAMPLES // 3:
+                return ghost
+            # Círculo por mínimos quadrados (Kåsa): x² + y² = 2ax + 2by + c.
+            a = np.stack([2 * px[keep], 2 * py[keep], np.ones(keep.sum())], axis=1)
+            cx, cy, c = np.linalg.lstsq(a, px[keep] ** 2 + py[keep] ** 2, rcond=None)[0]
+            fit_r = math.sqrt(max(c + cx * cx + cy * cy, 0.0))
+            far = np.abs(np.hypot(px - cx, py - cy) - fit_r) > RING_FIT_PX
+            if not (far & keep).any():
+                break
+            keep &= ~far
+        center = Vec2(float(cx), float(cy))
+        if abs(fit_r - r) > 0.2 * r or center.distance_to(ghost) > 0.5 * r:
+            return ghost
+        return center
+
+    def _whiteness(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        """Brancura (o menor canal de cor) em pontos com fração de pixel, por interpolação bilinear."""
+        x0 = np.clip(np.floor(xs).astype(np.int64), 0, self._w - 2)
+        y0 = np.clip(np.floor(ys).astype(np.int64), 0, self._h - 2)
+        fx, fy = np.clip(xs - x0, 0, 1), np.clip(ys - y0, 0, 1)
+
+        def at(dx: int, dy: int) -> np.ndarray:
+            return self._rgb[y0 + dy, x0 + dx].min(axis=-1).astype(np.float32)
+
+        return (at(0, 0) * (1 - fx) * (1 - fy) + at(1, 0) * fx * (1 - fy)
+                + at(0, 1) * (1 - fx) * fy + at(1, 1) * fx * fy)
+
+    def _stroke_centers(self, origin: Vec2, d: Vec2, start: float, stop: float) -> np.ndarray:
+        """Centro do traço branco com fração de pixel num corte perpendicular a cada pixel entre
+        ``start`` e ``stop``: média da brancura no corte (a borda do traço é suavizada)."""
+        s = np.arange(start, stop, 1.0)
+        reach = max(3.0, 0.35 * self._table.ball_radius)
+        ks = np.arange(-reach, reach + 1e-9, 0.25)
+        cx, cy = origin.x + d.x * s, origin.y + d.y * s
+        w = np.clip(self._whiteness(cx[:, None] - d.y * ks[None, :], cy[:, None] + d.x * ks[None, :]) - WHITE_BASE, 0, None)
+        total = w.sum(axis=1)
+        ok = total > 0
+        k = (w[ok] * ks).sum(axis=1) / total[ok]
+        return np.stack([cx[ok] - d.y * k, cy[ok] + d.x * k], axis=1)
+
     def _find_object_ball(self, ghost: Vec2, aim: Vec2) -> _Line | None:
         """A bola alvo encosta no anel, na frente da mira: acha o lado onde há uma bola e, se o jogo
         desenhou a linha que sai dela, usa essa linha como direção exata."""
@@ -486,6 +669,16 @@ class AimDetector:
         # A linha da bola alvo é colinear com o anel: começa no centro da bola (2 raios do anel).
         line = self._fit_line(ghost, coarse, 3.15 * r, max(6, int(0.6 * r)))
         direction = line.direction if line else Vec2.of_angle(coarse)
+        if line is not None:
+            # Reta passando pelo centro do anel: o braço até o traço é bem mais comprido que o próprio
+            # traço (curto nos cortes finos e com um leve tremido de quando o jogo é redimensionado).
+            start = ghost + direction * (2 * r)
+            pts = self._stroke_centers(start, direction, 1.2 * r, (line.end - start).dot(direction) - 2)
+            if len(pts) >= max(6, int(0.6 * r)):
+                q = pts - np.array([ghost.x, ghost.y])
+                vecs = np.linalg.eigh(q.T @ q)[1]
+                refined = Vec2(float(vecs[0, 1]), float(vecs[1, 1]))
+                direction = refined if refined.dot(direction) > 0 else -refined
         center = ghost + direction * (2 * r)
         return _Line(center, direction, line.end if line else center)
 

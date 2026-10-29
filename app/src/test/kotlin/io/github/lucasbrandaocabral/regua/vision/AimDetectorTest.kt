@@ -1,5 +1,6 @@
 package io.github.lucasbrandaocabral.regua.vision
 
+import io.github.lucasbrandaocabral.regua.geometry.Table
 import io.github.lucasbrandaocabral.regua.geometry.Vec2
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -82,6 +83,72 @@ class AimDetectorTest {
         assertTrue(angleBetween(result.direction, dir) < 0.15)
         assertNotNull(result.ghost)
         assertNotNull(result.objectBall)
+    }
+
+    @Test
+    fun findsRingAlmostTouchingTheCueBall() {
+        // Anel quase encostado na branca: o traço da mira entre as duas tem menos de um raio, e um raio
+        // que cruza o anel e a linha da tangente vai mais longe que ele.
+        for ((distance, degrees, cut) in listOf(
+            Triple(2.4, 222.0, -40.0), Triple(2.5, 30.0, 40.0), Triple(2.5, 177.0, 60.0),
+            Triple(2.8, 131.0, -15.0), Triple(3.2, 0.0, 60.0), Triple(3.2, 300.0, -70.0),
+        )) {
+            val scene = SyntheticTable()
+            val cue = Vec2(603.3, 281.7)
+            val dir = Vec2.ofAngle(Math.toRadians(degrees))
+            val ghost = cue + dir * (distance * scene.r)
+            val target = ghost + Vec2.ofAngle(Math.toRadians(degrees + cut)) * (2 * scene.r)
+            scene.ball(target, 230, 140, 30)
+            scene.aimAt(cue, target, dir)
+
+            val label = "$distance raios, $degrees°, corte $cut°"
+            val result = assertNotNullAnd(detector.detect(scene.frame(), scene.table), "sem resultado: $label")
+            val found = assertNotNullAnd(result.ghost, "sem anel: $label")
+            assertTrue("anel longe: $label", found.distanceTo(ghost) < 1.0)
+            assertTrue("ângulo: $label ${angleBetween(result.direction, dir)}", angleBetween(result.direction, dir) < 1.0)
+            val objectBall = assertNotNullAnd(result.objectBall, "sem alvo: $label")
+            assertTrue("direção do alvo: $label", angleBetween(objectBall - found, target - ghost) < 0.3)
+        }
+    }
+
+    @Test
+    fun objectDirectionOnThinCut() {
+        // Corte fino numa mesa pequena (o tamanho dela no Google Play Games): o jogo desenha só um
+        // pedacinho da linha da bola alvo, e meio grau de erro ali vira uns 4 px a cada 500 px de caminho.
+        val small = Table(196.3, 214.1, 944.7, 588.2, 11.3)
+        for (degrees in listOf(7.0, 27.0, 153.0, 211.0, 333.0)) {
+            val scene = SyntheticTable(1074, 672, small)
+            val cue = Vec2(560.0, 400.0)
+            val dir = Vec2.ofAngle(Math.toRadians(degrees))
+            val target = cue + dir * (9 * scene.r) + Vec2(-dir.y, dir.x) * (0.92 * 2 * scene.r)
+            scene.ball(target, 40, 150, 60)
+            scene.aimAt(cue, target, dir, objectLine = 2.5)
+
+            val result = assertNotNullAnd(AimDetector().detect(scene.frame(), small), "sem resultado em $degrees°")
+            val m = cue - target
+            val b = m dot dir
+            val trueGhost = cue + dir * (-b - kotlin.math.sqrt(b * b - ((m dot m) - 4 * scene.r * scene.r)))
+            val found = assertNotNullAnd(result.objectBall, "sem alvo em $degrees°") - assertNotNullAnd(result.ghost, "sem anel em $degrees°")
+            val error = angleBetween(found, target - trueGhost)
+            assertTrue("direção do alvo em $degrees°: $error", error < 0.15)
+        }
+    }
+
+    @Test
+    fun cueBallNextToWhiterStripeBall() {
+        // A listrada com o lado branco para cima tem mais branco que a branca coberta pela linha de mira:
+        // a branca é a bola de onde sai a linha.
+        val scene = SyntheticTable()
+        scene.stripeBallWhiteUp(Vec2(800.0, 150.0), 200, 20, 20)
+        val cue = Vec2(600.0, 280.0)
+        val dir = Vec2.ofAngle(Math.toRadians(200.0))
+        val target = cue + dir * (8 * scene.r)
+        scene.ball(target, 40, 150, 60)
+        scene.aimAt(cue, target, dir)
+        val result = assertNotNullAnd(detector.detect(scene.frame(), scene.table), "sem resultado")
+        assertTrue("branca em ${result.cue}", result.cue.distanceTo(cue) < 3.0)
+        assertTrue(angleBetween(result.direction, dir) < 0.15)
+        assertNotNull(result.ghost)
     }
 
     @Test
