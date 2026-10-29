@@ -113,5 +113,7 @@ Ela é ótima para treinar no modo offline/treino e entender ângulos e tabelas.
   `RulerView` desenha, `ControlPanel` é o painel, `ScreenTracker` grava a tela e `OverlayService` mantém
   as janelas por cima do jogo.
 - `./gradlew testReleaseUnitTest assembleRelease` roda os testes e gera `app/build/outputs/apk/release/app-release.apk`.
+- `pc/simulador.py` testa a visão em centenas de mesas parecidas com as do jogo (veja [pc/README.md](pc/README.md));
+  a visão do celular e a do PC são o mesmo algoritmo e dão o mesmo resultado.
 - O APK é assinado com `app/regua.keystore`, uma chave **sem segredo** versionada de propósito para que todo
   build atualize por cima do anterior. Para distribuir o app, gere uma chave própria e guarde-a fora do repositório.

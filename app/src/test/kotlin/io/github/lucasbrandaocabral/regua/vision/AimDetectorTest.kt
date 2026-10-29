@@ -112,6 +112,46 @@ class AimDetectorTest {
     }
 
     @Test
+    fun findsRingOverTheCueBall() {
+        // Branca quase encostada na bola alvo: o anel fica por cima da própria branca e cobre o miolo
+        // dela, e quase não sobra traço de mira.
+        for ((distance, degrees, cut) in listOf(
+            Triple(0.6, 40.0, 30.0), Triple(0.9, 200.0, -45.0), Triple(1.3, 300.0, 60.0),
+            Triple(1.8, 115.0, -20.0), Triple(1.1, 0.0, 0.0),
+        )) {
+            val scene = SyntheticTable()
+            val cue = Vec2(603.3, 281.7)
+            val dir = Vec2.ofAngle(Math.toRadians(degrees))
+            val ghost = cue + dir * (distance * scene.r)
+            val target = ghost + Vec2.ofAngle(Math.toRadians(degrees + cut)) * (2 * scene.r)
+            scene.ball(target, 120, 30, 20, striped = true)
+            scene.aimAt(cue, target, dir)
+
+            val label = "$distance raios, $degrees°, corte $cut°"
+            val result = assertNotNullAnd(AimDetector().detect(scene.frame(), scene.table), "sem resultado: $label")
+            assertTrue("branca longe: $label ${result.cue}", result.cue.distanceTo(cue) < 2.0)
+            val found = assertNotNullAnd(result.ghost, "sem anel: $label")
+            assertTrue("anel longe: $label $found", found.distanceTo(ghost) < 1.5)
+            val objectBall = assertNotNullAnd(result.objectBall, "sem alvo: $label")
+            assertTrue("direção do alvo: $label", angleBetween(objectBall - found, target - ghost) < 1.5)
+        }
+    }
+
+    @Test
+    fun ringOnCushionWithBallIsATarget() {
+        // A bola alvo encostada na tabela: o anel encosta na tabela também, mas tem bola nele.
+        val scene = SyntheticTable()
+        val cue = Vec2(500.0, 300.0)
+        val target = Vec2(800.0, scene.table.maxY - 2.0)
+        val dir = (target - Vec2(0.0, 0.8 * 2 * scene.r) - cue).normalized()
+        scene.ball(target, 40, 150, 60)
+        scene.aimAt(cue, target, dir)
+        val result = assertNotNullAnd(detector.detect(scene.frame(), scene.table), "sem resultado")
+        assertNotNull("anel na tabela com bola não virou alvo", result.ghost)
+        assertTrue(assertNotNullAnd(result.objectBall, "sem alvo").distanceTo(target) < 3.0)
+    }
+
+    @Test
     fun objectDirectionOnThinCut() {
         // Corte fino numa mesa pequena (o tamanho dela no Google Play Games): o jogo desenha só um
         // pedacinho da linha da bola alvo, e meio grau de erro ali vira uns 4 px a cada 500 px de caminho.
