@@ -186,17 +186,21 @@ class AimDetector:
         if near is not None:
             candidates.sort(key=lambda c: c.distance_to(near) > 3 * r)
         fallback = None
+        # Primeiro perto da direção do quadro anterior; se isso não der numa linha que acaba num anel
+        # (a dica pode cair noutro traço branco), varre todas as direções.
+        searches = (hint, None) if hint is not None else (None,)
         for rough in candidates:
-            guide = (self._find_guide(rough, hint) if hint is not None else None) or self._find_guide(rough, None)
-            if guide is None:
-                continue
-            cue = self._cue_center_on_line(guide.origin, guide.direction, r)
-            length = (guide.end - cue).dot(guide.direction)
-            ring = self._find_ghost(cue, guide.direction, length, r)
-            if ring is not None and self._white_fraction(ring, 0.5 * r) < HOLLOW_RING:
-                return guide, cue, ring, rough
-            if length - 1.5 * r >= self._min_guide_samples():
-                fallback = fallback or (guide, cue, ring, rough)
+            for around in searches:
+                guide = self._find_guide(rough, around)
+                if guide is None:
+                    continue
+                cue = self._cue_center_on_line(guide.origin, guide.direction, r)
+                length = (guide.end - cue).dot(guide.direction)
+                ring = self._find_ghost(cue, guide.direction, length, r)
+                if ring is not None and self._white_fraction(ring, 0.5 * r) < HOLLOW_RING:
+                    return guide, cue, ring, rough
+                if length - 1.5 * r >= self._min_guide_samples():
+                    fallback = fallback or (guide, cue, ring, rough)
         for rough in candidates:
             ring = self._find_close_ring(rough, r)
             if ring is not None:

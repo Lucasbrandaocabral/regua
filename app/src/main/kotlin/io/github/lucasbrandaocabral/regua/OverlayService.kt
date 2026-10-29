@@ -5,17 +5,21 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.graphics.drawable.Icon
 import android.hardware.input.InputManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Environment
 import android.os.IBinder
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
@@ -24,6 +28,11 @@ import android.widget.Toast
 import io.github.lucasbrandaocabral.regua.geometry.Table
 import io.github.lucasbrandaocabral.regua.geometry.Vec2
 import io.github.lucasbrandaocabral.regua.vision.AimDetector
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -148,6 +157,42 @@ class OverlayService : Service(), ControlPanel.Actions {
         }
         // O pedido de gravação de tela precisa de uma Activity; ela devolve a permissão para cá.
         startActivity(Intent(this, ProjectionPermissionActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    override fun saveFrame() {
+        val t = tracker
+        if (t == null) {
+            Toast.makeText(this, "Ligue o AUTO para guardar o que a régua está vendo.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        t.saveNextFrame { bitmap, result ->
+            val name = "regua-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) +
+                (if (result == null) "-sem-mira" else "-com-mira") + ".png"
+            val saved = try {
+                writePicture(name, bitmap)
+            } catch (e: Exception) {
+                false
+            }
+            ruler.post {
+                val message = if (saved) "Quadro guardado em Imagens/Regua: $name" else "Não deu para guardar o quadro."
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /** PNG na galeria (Imagens/Regua); antes do Android 10, na pasta de imagens do próprio app. */
+    private fun writePicture(name: String, bitmap: Bitmap): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Regua")
+            }
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+            return contentResolver.openOutputStream(uri)?.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } ?: false
+        }
+        val dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: return false
+        return FileOutputStream(File(dir, name)).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
     override fun rotate(degrees: Float) {

@@ -1,5 +1,6 @@
 package io.github.lucasbrandaocabral.regua
 
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -51,6 +52,11 @@ class ScreenTracker(
     private var pixels = IntArray(0)
     private var previous: AimDetector.Result? = null
     private var lastFrameAt = 0L
+    private var pending = false
+
+    /** Pedido de cópia do próximo quadro analisado (para o usuário mandar quando a mira falha). */
+    @Volatile
+    private var snapshot: ((Bitmap, AimDetector.Result?) -> Unit)? = null
 
     private val callback = object : MediaProjection.Callback() {
         // O usuário parou a gravação pelo sistema (ou outro app pegou a tela).
@@ -115,20 +121,42 @@ class ScreenTracker(
         setOnImageAvailableListener({ process(it) }, worker)
     }
 
+    /**
+     * Na thread de trabalho, com o próximo quadro: a imagem inteira da tela e o que a régua achou nela.
+     * A imagem é feita só para isso (a análise normal copia só as linhas da mesa).
+     */
+    fun saveNextFrame(onFrame: (Bitmap, AimDetector.Result?) -> Unit) {
+        snapshot = onFrame
+    }
+
     private fun process(source: ImageReader) {
+        if (stopped) return
+        val wait = lastFrameAt + MIN_FRAME_INTERVAL_MS - SystemClock.uptimeMillis()
+        if (wait > 0) {
+            // Cedo demais: analisa o quadro mais novo daqui a pouco, em vez de jogar este fora. Se a
+            // tela parasse de mudar logo depois, nenhum quadro novo chegaria e a régua ficaria presa no
+            // resultado de um quadro do meio do movimento.
+            if (!pending) {
+                pending = true
+                worker.postDelayed({
+                    pending = false
+                    process(source)
+                }, wait)
+            }
+            return
+        }
         val image = try {
             source.acquireLatestImage()
         } catch (e: IllegalStateException) {
             null
         } ?: return
-        val now = SystemClock.uptimeMillis()
         val table = table
-        if (stopped || now - lastFrameAt < MIN_FRAME_INTERVAL_MS || table == null) {
+        if (table == null) {
             image.close()
-            if (table == null) previous = null
+            previous = null
             return
         }
-        lastFrameAt = now
+        lastFrameAt = SystemClock.uptimeMillis()
 
         val width = screenWidth
         val height = screenHeight
@@ -139,33 +167,45 @@ class ScreenTracker(
         }
         val scale = image.width.toDouble() / width
         val scaledTable = Table(table.left * scale, table.top * scale, table.right * scale, table.bottom * scale, table.ballRadius * scale)
+        val save = snapshot
+        snapshot = null
         val frame = try {
-            copyTableRows(image, scaledTable)
+            copyRows(image, if (save != null) null else scaledTable)
         } finally {
             image.close()
         }
 
         val result = detector.detect(frame, scaledTable, previous = previous)
         previous = result
+        save?.invoke(toBitmap(frame), result)
         val onScreen = result?.let { scaled(it, 1 / scale) }
         main.post { if (!stopped) onResult(onScreen) }
     }
 
-    /** Copia só as linhas da mesa (o resto do quadro não é usado). */
-    private fun copyTableRows(image: Image, table: Table): Frame {
+    /** Copia só as linhas da [table] (o resto do quadro não é usado), ou o quadro inteiro sem ela. */
+    private fun copyRows(image: Image, table: Table?): Frame {
         val w = image.width
         val h = image.height
         if (pixels.size != w * h) pixels = IntArray(w * h)
         val plane = image.planes[0]
         val rowInts = plane.rowStride / 4
         val ints = plane.buffer.order(ByteOrder.LITTLE_ENDIAN).asIntBuffer()
-        val y0 = max(0, (table.top - table.ballRadius).toInt())
-        val y1 = min(h - 1, (table.bottom + table.ballRadius).toInt())
+        val y0 = if (table == null) 0 else max(0, (table.top - table.ballRadius).toInt())
+        val y1 = if (table == null) h - 1 else min(h - 1, (table.bottom + table.ballRadius).toInt())
         for (y in y0..y1) {
             ints.position(y * rowInts)
             ints.get(pixels, y * w, w)
         }
         return Frame(w, h, pixels)
+    }
+
+    /** Os pixels do quadro vêm como 0xAABBGGRR; o Bitmap quer 0xAARRGGBB. */
+    private fun toBitmap(frame: Frame): Bitmap {
+        val argb = IntArray(frame.width * frame.height) { i ->
+            val p = frame.pixels[i]
+            (p and 0xFF00FF00.toInt()) or ((p and 0xFF) shl 16) or ((p shr 16) and 0xFF)
+        }
+        return Bitmap.createBitmap(argb, frame.width, frame.height, Bitmap.Config.ARGB_8888)
     }
 
     private fun scaled(r: AimDetector.Result, k: Double) = AimDetector.Result(
