@@ -42,7 +42,8 @@ baixe <https://github.com/Lucasbrandaocabral/Regua/releases/download/apk/Regua-P
 
 O botão **AUTO** do painel mostra o estado: verde = seguindo a linha; amarelo = a linha do jogo não está
 aparecendo (vez do adversário, bolas andando); cinza = desligado (toque para ligar de novo).
-Se a linha do jogo está na tela e o AUTO continua amarelo, **segure o AUTO**: a régua guarda em
+Embaixo de AUTO aparecem dois números, como "9/12": em quantos quadros do último segundo a régua achou a
+mira e quantos ela analisou. Se a linha do jogo está na tela e o AUTO continua amarelo, **segure o AUTO**: a régua guarda em
 Imagens/Regua o quadro exato que estava analisando, para dar para ver o que ela não reconheceu.
 
 A bola que o círculo do jogo toca é sempre a bola alvo no automático (o botão de alvo só vale no manual).

@@ -17,7 +17,9 @@ import android.hardware.input.InputManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
@@ -54,6 +56,35 @@ class OverlayService : Service(), ControlPanel.Actions {
     private var tracker: ScreenTracker? = null
     private var autoState = ControlPanel.AutoState.OFF
     private var lastAimAt = 0L
+    private var lastFrameAt = 0L
+    private var framesSeen = 0
+    private var framesFound = 0
+    private val clock = Handler(Looper.getMainLooper())
+
+    /** Uma vez por segundo, enquanto a mira automática está ligada: o contador do botão AUTO. */
+    private val counter = object : Runnable {
+        override fun run() {
+            if (tracker == null) return
+            panel.setAutoInfo("$framesFound/$framesSeen")
+            framesSeen = 0
+            framesFound = 0
+            clock.postDelayed(this, 1000)
+        }
+    }
+
+    /**
+     * A captura de tela só manda um quadro novo quando algo muda na tela. Com o jogo parado e a régua
+     * sem nada para desenhar, não chegava quadro nenhum: a mira do jogo ficava sem ser analisada e o
+     * AUTO preso no amarelo (só um print, que mexe na tela, fazia a régua aparecer por um instante).
+     * Redesenhar a régua, mesmo igual, faz o Android compor a tela de novo e mandar um quadro.
+     */
+    private val keepAlive = object : Runnable {
+        override fun run() {
+            if (tracker == null) return
+            if (SystemClock.uptimeMillis() - lastFrameAt > KEEP_ALIVE_MS) ruler.invalidate()
+            clock.postDelayed(this, KEEP_ALIVE_MS)
+        }
+    }
 
     /** Onde a janela da régua começa na tela (normalmente 0,0). */
     private var overlayOffset = Vec2.ZERO
@@ -290,6 +321,10 @@ class OverlayService : Service(), ControlPanel.Actions {
         ruler.autoTracking = true
         updateTrackerTable()
         setAutoState(ControlPanel.AutoState.SEARCHING)
+        framesSeen = 0
+        framesFound = 0
+        clock.post(counter)
+        clock.post(keepAlive)
     }
 
     private fun stopTracking() {
@@ -299,6 +334,9 @@ class OverlayService : Service(), ControlPanel.Actions {
 
     private fun onTrackingStopped() {
         tracker = null
+        clock.removeCallbacks(counter)
+        clock.removeCallbacks(keepAlive)
+        panel.setAutoInfo(null)
         ruler.autoTracking = false
         ruler.autoAim = null
         startForegroundWithTypes(capturing = false)
@@ -309,6 +347,9 @@ class OverlayService : Service(), ControlPanel.Actions {
     private fun onAim(result: AimDetector.Result?) {
         if (tracker == null) return
         val now = SystemClock.uptimeMillis()
+        lastFrameAt = now
+        framesSeen++
+        if (result != null) framesFound++
         if (result != null) {
             lastAimAt = now
             ruler.autoAim = toOverlay(result)
@@ -440,6 +481,9 @@ class OverlayService : Service(), ControlPanel.Actions {
         private const val MAX_CUSHIONS = 5
         private const val PLAY_ALPHA = 0.8f
         private const val LOST_AFTER_MS = 300L
+
+        /** Sem quadro novo por mais que isso, a régua se redesenha para a captura mandar um. */
+        private const val KEEP_ALIVE_MS = 150L
 
         @Volatile
         var isRunning = false

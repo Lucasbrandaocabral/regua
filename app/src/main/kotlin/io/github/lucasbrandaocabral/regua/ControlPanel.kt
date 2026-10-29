@@ -25,6 +25,7 @@ import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+
 /** Coluna de botões flutuante que fica por cima do jogo, ao lado da régua. */
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
 class ControlPanel(context: Context, private val actions: Actions) : LinearLayout(context) {
@@ -91,6 +92,20 @@ class ControlPanel(context: Context, private val actions: Actions) : LinearLayou
         tableButton.setOnClickListener { actions.toggleCalibration() }
         closeButton.setOnClickListener { actions.close() }
         setUpMoveButton()
+    }
+
+    /**
+     * Linha pequena embaixo de "AUTO": quantos quadros da tela a régua analisou no último segundo e
+     * em quantos achou a mira (por exemplo "9/12"); null volta só para "AUTO".
+     */
+    fun setAutoInfo(info: String?) {
+        if (info == null) {
+            autoButton.text = "AUTO"
+            return
+        }
+        val text = SpannableString("AUTO\n$info")
+        text.setSpan(RelativeSizeSpan(0.75f), 5, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        autoButton.text = text
     }
 
     fun render(mode: RulerView.Mode, auto: AutoState, cushions: Int, targetEnabled: Boolean, spinSide: Float, spinFollow: Float) {
