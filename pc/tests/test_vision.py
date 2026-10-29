@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import pytest
 
 from regua_pc.balls import BallFinder
@@ -117,6 +118,21 @@ def test_cue_ball_next_to_whiter_stripe_ball():
     res = AimDetector().detect(scene.frame(), scene.table)
     assert res is not None and res.cue.distance_to(cue) < 3.0
     assert res.ghost is not None
+
+
+def test_nothing_when_table_is_not_on_screen():
+    # Como no menu do jogo: sem as bordas das tabelas, texto branco não pode virar branca e mira.
+    scene = SyntheticTable()
+    cue = Vec2(600, 280)
+    scene.aim_at(cue, None, Vec2(1, 0))
+    menu = scene.frame().copy()
+    t = scene.table
+    yy, xx = np.mgrid[0:menu.shape[0], 0:menu.shape[1]]
+    inside = (xx >= t.left - 40) & (xx <= t.right + 40) & (yy >= t.top - 40) & (yy <= t.bottom + 40)
+    on_aim = (np.abs(yy - cue.y) < 20) & (xx > cue.x - 30)
+    menu[inside & ~on_aim] = (120, 40, 160)
+    assert AimDetector().detect(menu, t) is None
+    assert AimDetector().detect(scene.frame(), t) is not None
 
 
 def test_nothing_without_guide():

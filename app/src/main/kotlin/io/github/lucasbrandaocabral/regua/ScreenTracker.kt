@@ -1,6 +1,9 @@
 package io.github.lucasbrandaocabral.regua
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -177,7 +180,7 @@ class ScreenTracker(
 
         val result = detector.detect(frame, scaledTable, previous = previous)
         previous = result
-        save?.invoke(toBitmap(frame), result)
+        save?.invoke(annotated(frame, scaledTable, result), result)
         val onScreen = result?.let { scaled(it, 1 / scale) }
         main.post { if (!stopped) onResult(onScreen) }
     }
@@ -199,13 +202,44 @@ class ScreenTracker(
         return Frame(w, h, pixels)
     }
 
-    /** Os pixels do quadro vêm como 0xAABBGGRR; o Bitmap quer 0xAARRGGBB. */
-    private fun toBitmap(frame: Frame): Bitmap {
+    /**
+     * O quadro como Bitmap (os pixels vêm como 0xAABBGGRR; o Bitmap quer 0xAARRGGBB), com a mesa que
+     * a régua usou em ciano, o que ela achou em magenta e os números no topo: dá para ver se a mesa
+     * está no lugar certo do quadro.
+     */
+    private fun annotated(frame: Frame, table: Table, result: AimDetector.Result?): Bitmap {
         val argb = IntArray(frame.width * frame.height) { i ->
             val p = frame.pixels[i]
             (p and 0xFF00FF00.toInt()) or ((p and 0xFF) shl 16) or ((p shr 16) and 0xFF)
         }
-        return Bitmap.createBitmap(argb, frame.width, frame.height, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(argb, 0, frame.width, 0, 0, frame.width, frame.height)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = Color.CYAN
+        }
+        canvas.drawRect(table.left.toFloat(), table.top.toFloat(), table.right.toFloat(), table.bottom.toFloat(), paint)
+        val r = table.ballRadius.toFloat()
+        result?.let {
+            paint.color = Color.MAGENTA
+            val end = it.cue + it.direction * it.guideLength
+            canvas.drawCircle(it.cue.x.toFloat(), it.cue.y.toFloat(), r, paint)
+            canvas.drawLine(it.cue.x.toFloat(), it.cue.y.toFloat(), end.x.toFloat(), end.y.toFloat(), paint)
+            it.ghost?.let { g -> canvas.drawCircle(g.x.toFloat(), g.y.toFloat(), r, paint) }
+        }
+        val text = "quadro ${frame.width}x${frame.height}  mesa %.1f %.1f %.1f %.1f r=%.1f  %s".format(
+            java.util.Locale.US, table.left, table.top, table.right, table.bottom, table.ballRadius,
+            if (result == null) "sem mira" else "branca %.0f,%.0f".format(java.util.Locale.US, result.cue.x, result.cue.y),
+        )
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 26f
+            color = Color.WHITE
+            setShadowLayer(3f, 0f, 0f, Color.BLACK)
+        }
+        canvas.drawText(text, 12f, 32f, textPaint)
+        return bitmap
     }
 
     private fun scaled(r: AimDetector.Result, k: Double) = AimDetector.Result(

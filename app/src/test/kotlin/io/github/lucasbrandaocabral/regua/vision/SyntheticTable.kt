@@ -26,16 +26,25 @@ class SyntheticTable(
     private val outline = 0.11 * r
 
     init {
+        // Igual à mesa sintética dos testes do PC: degradê no pano, sombra das tabelas perto da borda,
+        // faixa de borracha clara por fora e madeira mais longe.
         val cx = (table.left + table.right) / 2
         val cy = (table.top + table.bottom) / 2
+        val halfW = table.width / 2
+        val halfH = (table.bottom - table.top) / 2
         for (y in 0 until height) {
             for (x in 0 until width) {
                 val inside = x >= table.left && x <= table.right && y >= table.top && y <= table.bottom
-                pixels[y * width + x] = if (inside) {
-                    val t = min(1.0, hypot((x - cx) / (width / 2.0), (y - cy) / (height / 2.0)))
-                    rgb(mix(127, 34, t), mix(198, 126, t), mix(218, 165, t))
-                } else {
-                    rgb(150, 30, 20)
+                val rail = x < table.left - 2 * r || x > table.right + 2 * r || y < table.top - 2 * r || y > table.bottom + 2 * r
+                pixels[y * width + x] = when {
+                    inside -> {
+                        val t = min(1.0, hypot((x - cx) / halfW, (y - cy) / halfH) / 1.2)
+                        val dist = minOf(x - table.left, table.right - x, y - table.top, table.bottom - y)
+                        val dark = 1 - 0.45 * (1 - dist / (1.5 * r)).coerceIn(0.0, 1.0)
+                        rgb((mix(127, 34, t) * dark).toInt(), (mix(198, 126, t) * dark).toInt(), (mix(218, 165, t) * dark).toInt())
+                    }
+                    rail -> rgb(150, 30, 20)
+                    else -> rgb(70, 170, 215)
                 }
             }
         }

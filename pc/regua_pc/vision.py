@@ -14,6 +14,8 @@ import numpy as np
 from .balls import BallFinder
 from .geometry import Table, Vec2
 
+TABLE_EDGE_CONTRAST = 40.0  # borda de uma tabela: na mesa do jogo passa de 90; no menu, perto de 0
+MIN_TABLE_EDGES = 3  # das quatro tabelas (a barra de um print pode cobrir uma)
 MIN_CUE_FILL = 0.6  # fração do quadrado central que precisa ser branca para ser a branca
 MAX_CUE_CANDIDATES = 6  # bolas brancas testadas (as listradas com o lado branco para cima também são)
 HOLLOW_RING = 0.4  # fração branca máxima no miolo do anel (a branca ou outra bola no fim da linha é cheia)
@@ -77,6 +79,43 @@ def white_mask(rgb: np.ndarray) -> np.ndarray:
     return (mn >= 185) & ((mx - mn) <= 70)
 
 
+def table_visible(rgb: np.ndarray, t: Table) -> bool:
+    """A mesa do jogo está na imagem? Em cada tabela a borracha clara fica do lado de fora da linha e
+    a sombra escura no pano, logo para dentro (qualquer cor de mesa). No menu e nas outras telas essa
+    borda não existe, e texto branco viraria bola e linha de mira."""
+    h, w = rgb.shape[:2]
+    r = t.ball_radius
+    step = max(2, int(round(0.25 * r)))
+    reach = max(3, int(round(0.4 * r)))  # tolera a calibração uns pixels fora
+    cx = (t.left + t.right) / 2
+    # Longe das caçapas, onde a borda é reta.
+    cols = np.concatenate([np.arange(t.left + 0.12 * t.width, cx - 0.08 * t.width, step),
+                           np.arange(cx + 0.08 * t.width, t.right - 0.12 * t.width, step)]).astype(int)
+    rows = np.arange(t.top + 0.15 * t.height, t.bottom - 0.15 * t.height, step).astype(int)
+    edges = 0
+    for line, span, horizontal, outside in ((t.top, cols, True, -1), (t.bottom, cols, True, 1),
+                                            (t.left, rows, False, -1), (t.right, rows, False, 1)):
+        best = -math.inf
+        center = int(round(line))
+        for p in range(center - reach, center + reach + 1):
+            if horizontal:
+                xo = xi = span
+                yo, yi = np.full(len(span), p + outside), np.full(len(span), p - outside)
+            else:
+                yo = yi = span
+                xo, xi = np.full(len(span), p + outside), np.full(len(span), p - outside)
+            ok = (xo >= 0) & (xo < w) & (xi >= 0) & (xi < w) & (yo >= 0) & (yo < h) & (yi >= 0) & (yi < h)
+            if not ok.any():
+                continue
+            lo = rgb[yo[ok], xo[ok]].astype(np.float32) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+            li = rgb[yi[ok], xi[ok]].astype(np.float32) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+            # Mediana como a do Kotlin (o do meio depois de ordenar): ignora bolas e linhas.
+            d = np.sort(lo - li)
+            best = max(best, float(d[len(d) // 2]))
+        edges += best >= TABLE_EDGE_CONTRAST
+    return edges >= MIN_TABLE_EDGES
+
+
 @dataclass
 class _Line:
     origin: Vec2
@@ -94,7 +133,7 @@ class AimDetector:
     def detect(self, rgb: np.ndarray, table: Table, previous: AimResult | None = None) -> AimResult | None:
         """``previous`` é o resultado do quadro anterior: procura primeiro perto dele (bem mais rápido)."""
         r = table.ball_radius
-        if r < 3.0:
+        if r < 3.0 or not table_visible(rgb, table):
             return None
         self._rgb = rgb
         self._h, self._w = rgb.shape[:2]
