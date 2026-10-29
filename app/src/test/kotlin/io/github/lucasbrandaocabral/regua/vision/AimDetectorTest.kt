@@ -208,6 +208,26 @@ class AimDetectorTest {
     }
 
     @Test
+    fun nothingWhenTheTableIsNotOnScreen() {
+        // Como no menu do jogo: sem as bordas das tabelas, texto branco não pode virar branca e mira.
+        val scene = SyntheticTable()
+        val cue = Vec2(600.0, 280.0)
+        scene.aimAt(cue, target = null, direction = Vec2(1.0, 0.0))
+        val menu = scene.frame()
+        val plain = Frame.rgb(120, 40, 160)
+        for (y in 0 until menu.height) {
+            for (x in 0 until menu.width) {
+                val inside = x >= scene.table.left - 40 && x <= scene.table.right + 40 && y >= scene.table.top - 40 && y <= scene.table.bottom + 40
+                val onAim = kotlin.math.abs(y - cue.y) < 20 && x > cue.x - 30
+                if (inside && !onAim) menu.pixels[y * menu.width + x] = plain
+            }
+        }
+        assertNull(AimDetector().detect(menu, scene.table))
+        // A mesma cena com a mesa à mostra é achada normalmente.
+        assertNotNull(AimDetector().detect(scene.frame(), scene.table))
+    }
+
+    @Test
     fun nothingWithoutGuideOrCueBall() {
         val empty = SyntheticTable()
         empty.ball(Vec2(400.0, 200.0), 220, 30, 30)

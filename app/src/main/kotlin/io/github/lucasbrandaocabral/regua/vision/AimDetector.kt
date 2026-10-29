@@ -65,7 +65,7 @@ class AimDetector {
      */
     fun detect(frame: Frame, table: Table, findObjectBall: Boolean = true, previous: Result? = null): Result? {
         val r = table.ballRadius
-        if (r < 3.0) return null
+        if (r < 3.0 || !tableVisible(frame, table)) return null
         val hint = previous?.let { Math.toDegrees(atan2(it.direction.y, it.direction.x)) }
         val aim = findAim(frame, table, previous?.cue, hint) ?: return null
         var direction = aim.guide.direction
@@ -113,6 +113,67 @@ class AimDetector {
             balls = balls,
         )
     }
+
+    /**
+     * A mesa do jogo está na tela? Em cada tabela a borracha clara fica do lado de fora da linha
+     * calibrada e a sombra escura no pano, logo para dentro (vale para qualquer cor de mesa). No menu
+     * e nas outras telas do jogo essa borda não existe, e texto branco viraria bola e linha de mira.
+     * Basta [MIN_TABLE_EDGES] das quatro: a barra de um print do Android pode cobrir uma delas.
+     */
+    private fun tableVisible(frame: Frame, table: Table): Boolean {
+        val r = table.ballRadius
+        val step = max(2, (0.25 * r).roundToInt())
+        val reach = max(3, (0.4 * r).roundToInt()) // tolera a calibração uns pixels fora
+        val w = table.width
+        val h = table.bottom - table.top
+        // Longe das caçapas, onde a borda é reta.
+        val columns = (spaced(table.left + 0.12 * w, table.centerX - 0.08 * w, step) +
+            spaced(table.centerX + 0.08 * w, table.right - 0.12 * w, step)).toIntArray()
+        val rows = spaced(table.top + 0.15 * h, table.bottom - 0.15 * h, step).toIntArray()
+        var edges = 0
+        if (edgeContrast(frame, table.top, columns, horizontal = true, outside = -1, reach) >= TABLE_EDGE_CONTRAST) edges++
+        if (edgeContrast(frame, table.bottom, columns, horizontal = true, outside = 1, reach) >= TABLE_EDGE_CONTRAST) edges++
+        if (edgeContrast(frame, table.left, rows, horizontal = false, outside = -1, reach) >= TABLE_EDGE_CONTRAST) edges++
+        if (edgeContrast(frame, table.right, rows, horizontal = false, outside = 1, reach) >= TABLE_EDGE_CONTRAST) edges++
+        return edges >= MIN_TABLE_EDGES
+    }
+
+    private fun spaced(from: Double, to: Double, step: Int): List<Int> {
+        val list = ArrayList<Int>()
+        var v = from
+        while (v < to) {
+            list += v.toInt()
+            v += step
+        }
+        return list
+    }
+
+    /**
+     * Maior contraste mediano (claro de fora menos escuro de dentro) entre linhas a até [reach] px da
+     * linha calibrada [line]; [span] são as posições ao longo dela. A mediana ignora bolas e linhas.
+     */
+    private fun edgeContrast(frame: Frame, line: Double, span: IntArray, horizontal: Boolean, outside: Int, reach: Int): Double {
+        val values = DoubleArray(span.size)
+        var best = Double.NEGATIVE_INFINITY
+        val center = line.roundToInt()
+        for (p in center - reach..center + reach) {
+            var n = 0
+            for (s in span) {
+                val xo = if (horizontal) s else p + outside
+                val yo = if (horizontal) p + outside else s
+                val xi = if (horizontal) s else p - outside
+                val yi = if (horizontal) p - outside else s
+                if (xo !in 0 until frame.width || xi !in 0 until frame.width || yo !in 0 until frame.height || yi !in 0 until frame.height) continue
+                values[n++] = luminance(frame.pixel(xo, yo)) - luminance(frame.pixel(xi, yi))
+            }
+            if (n == 0) continue
+            values.sort(0, n)
+            best = max(best, values[n / 2])
+        }
+        return best
+    }
+
+    private fun luminance(p: Int) = 0.299 * Frame.red(p) + 0.587 * Frame.green(p) + 0.114 * Frame.blue(p)
 
     /**
      * O taco fica atrás da branca, na direção oposta à mira; tacos enfeitados têm pedaços do tamanho
@@ -882,6 +943,12 @@ class AimDetector {
 
         /** Bolas brancas testadas (as listradas com o lado branco para cima também são). */
         const val MAX_CUE_CANDIDATES = 6
+
+        /** Contraste mínimo da borda de uma tabela (na mesa do jogo passa de 90; no menu, perto de 0). */
+        const val TABLE_EDGE_CONTRAST = 40.0
+
+        /** Quantas das quatro tabelas precisam aparecer para contar que a mesa está na tela. */
+        const val MIN_TABLE_EDGES = 3
 
         /** Raio (em raios de bola) em volta da branca onde não procura outras bolas (a mão do jogo fica ali). */
         const val CUE_EXCLUSION = 2.2
