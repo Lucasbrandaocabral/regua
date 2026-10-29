@@ -138,8 +138,9 @@ def _path(p: QPainter, ball: BallPath, color: QColor, width: float, skip: float 
 
 
 def _contact(p: QPainter, ball: BallPath, color: QColor, width: float, r: float) -> None:
-    """Se o caminho termina encostando numa bola, marca onde a bola em movimento fica no choque."""
-    if ball.end is not PathEnd.BALL:
+    """Se o caminho termina encostando numa bola ou numa ponta da boca da caçapa, marca onde a bola
+    em movimento fica no choque."""
+    if ball.end not in (PathEnd.BALL, PathEnd.JAW):
         return
     c = ball.points[-1]
     _stroke(p, lambda: p.drawEllipse(QPointF(c.x, c.y), r, r), color, width * 0.75, dashed=True)

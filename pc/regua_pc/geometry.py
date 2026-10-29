@@ -69,9 +69,10 @@ class Pocket:
 
 
 # Medidas em raios de bola, tiradas de prints do 8 Ball Pool (todas as mesas têm a mesma geometria).
-CORNER_MOUTH = 1.7  # abertura da caçapa de canto, a partir do canto do retângulo interno
-SIDE_MOUTH = 1.5  # meia abertura da caçapa do meio, onde o centro da bola cruza a tabela
-SIDE_MIN_APPROACH = 0.4  # bola rasante demais bate na quina da caçapa do meio
+# As pontas da boca são onde a borracha reta acaba, na linha das tabelas.
+CORNER_JAW = 2.2  # ponta da caçapa de canto, contando da tabela do lado
+SIDE_JAW = 1.9  # ponta da caçapa do meio, contando do meio da tabela
+JAW_CLEARANCE = 0.95  # a bola só cai se o centro passa pelo menos isso longe das duas pontas
 CORNER_HOLE_OFFSET = 1.0
 CORNER_HOLE_RADIUS = 2.1
 SIDE_HOLE_OFFSET = 1.8
@@ -135,6 +136,20 @@ class Table:
             return Pocket(pid, Vec2(self.center_x, self.top - SIDE_HOLE_OFFSET * r), SIDE_HOLE_RADIUS * r)
         return Pocket(pid, Vec2(self.center_x, self.bottom + SIDE_HOLE_OFFSET * r), SIDE_HOLE_RADIUS * r)
 
+    def mouth(self, pid: PocketId) -> tuple[Vec2, Vec2]:
+        """As duas pontas da boca da caçapa."""
+        j, s = CORNER_JAW * self.ball_radius, SIDE_JAW * self.ball_radius
+        if pid is PocketId.TOP_LEFT:
+            return Vec2(self.left + j, self.top), Vec2(self.left, self.top + j)
+        if pid is PocketId.TOP_RIGHT:
+            return Vec2(self.right - j, self.top), Vec2(self.right, self.top + j)
+        if pid is PocketId.BOTTOM_LEFT:
+            return Vec2(self.left + j, self.bottom), Vec2(self.left, self.bottom - j)
+        if pid is PocketId.BOTTOM_RIGHT:
+            return Vec2(self.right - j, self.bottom), Vec2(self.right, self.bottom - j)
+        y = self.top if pid is PocketId.TOP_MIDDLE else self.bottom
+        return Vec2(self.center_x - s, y), Vec2(self.center_x + s, y)
+
     @property
     def pockets(self) -> list[Pocket]:
         return [self.pocket(p) for p in PocketId]
@@ -143,6 +158,7 @@ class Table:
 class PathEnd(Enum):
     CUSHION = "cushion"  # parou na última tabela permitida
     POCKET = "pocket"  # entrou numa caçapa
+    JAW = "jaw"  # chegou na boca da caçapa mas bate numa das pontas
     BALL = "ball"  # encostou em outra bola
     LIMIT = "limit"  # acabou o comprimento máximo
 
@@ -196,9 +212,19 @@ def solve(
 ) -> Shot:
     """Calcula a tacada. A primeira bola que a branca encostar (o alvo ou um dos obstáculos) vira a
     bola alvo; os caminhos param na bola que encostarem e, se a bola alvo acertar outra, calcula
-    também o caminho dessa outra (combinação)."""
+    também o caminho dessa outra (combinação).
+
+    ``target`` é a bola que o anel do jogo encosta: se a branca chega nela em linha reta, nenhum
+    obstáculo para a branca antes. O jogo já mostrou que ela passa; uma bola que pareça estar no
+    caminho só raspa por um ou dois pixels de erro na posição achada."""
     balls = ([target] if target is not None else []) + list(obstacles)
-    cue_path = trace(table, cue, aim, cushions, balls, side_spin=spin.side)
+    cue_path = None
+    if target is not None:
+        cue_path = trace(table, cue, aim, cushions, [target], side_spin=spin.side)
+        if cue_path.hit_ball is None or cue_path.bounces:
+            cue_path = None
+    if cue_path is None:
+        cue_path = trace(table, cue, aim, cushions, balls, side_spin=spin.side)
     hit = cue_path.hit_ball
     if hit is None:
         return Shot(cue_path)
@@ -277,8 +303,10 @@ def trace(
         )
         points.append(wall)
 
-        pocket = _pocket_at(table, wall, d, vertical, horizontal)
+        pocket = _mouth_at(table, wall, d, vertical, horizontal)
         if pocket is not None:
+            if not _drops(table, pocket, pos, d):
+                return BallPath(points, bounces, PathEnd.JAW, d)
             # Continua um pouco para dentro do buraco, só para a linha terminar na caçapa.
             depth = min(max((pocket.center - wall).dot(d), 0.0), 3 * table.ball_radius)
             points.append(wall + d * depth)
@@ -299,25 +327,51 @@ def trace(
         remaining -= t_wall
 
 
-def _pocket_at(table: Table, p: Vec2, d: Vec2, vertical: bool, horizontal: bool) -> Pocket | None:
+def _mouth_at(table: Table, p: Vec2, d: Vec2, vertical: bool, horizontal: bool) -> Pocket | None:
+    """A caçapa em cuja boca a bola chega: o ponto onde ela encosta na linha das tabelas fica entre as
+    pontas (fora delas é borracha reta e a bola bate)."""
     r = table.ball_radius
-    corner = CORNER_MOUTH * r
+    jaw = CORNER_JAW * r
     if horizontal:
         top = d.y < 0
-        if p.x - table.min_x <= corner:
+        if p.x - table.left <= jaw:
             return table.pocket(PocketId.TOP_LEFT if top else PocketId.BOTTOM_LEFT)
-        if table.max_x - p.x <= corner:
+        if table.right - p.x <= jaw:
             return table.pocket(PocketId.TOP_RIGHT if top else PocketId.BOTTOM_RIGHT)
-        cross_x = p.x + d.x / abs(d.y) * r
-        if abs(d.y) >= SIDE_MIN_APPROACH and abs(cross_x - table.center_x) <= SIDE_MOUTH * r:
+        if abs(p.x - table.center_x) <= SIDE_JAW * r:
             return table.pocket(PocketId.TOP_MIDDLE if top else PocketId.BOTTOM_MIDDLE)
     if vertical:
         left = d.x < 0
-        if p.y - table.min_y <= corner:
+        if p.y - table.top <= jaw:
             return table.pocket(PocketId.TOP_LEFT if left else PocketId.TOP_RIGHT)
-        if table.max_y - p.y <= corner:
+        if table.bottom - p.y <= jaw:
             return table.pocket(PocketId.BOTTOM_LEFT if left else PocketId.BOTTOM_RIGHT)
     return None
+
+
+def _drops(table: Table, pocket: Pocket, start: Vec2, d: Vec2) -> bool:
+    """A bola cai se o centro atravessa a boca entre as duas pontas sem passar a menos de
+    ``JAW_CLEARANCE`` raios de nenhuma delas. Bola rasante cruza a boca depois da ponta de lá."""
+    a, b = table.mouth(pocket.id)
+    ab = b - a
+    n = Vec2(-ab.y, ab.x)
+    if abs(d.dot(n)) < _EPS:
+        return False
+    s = (a - start).dot(n) / d.dot(n)
+    if s < 0:  # já começou dentro da boca
+        return True
+    cross = start + d * s
+    if not 0.0 < (cross - a).dot(ab) / ab.dot(ab) < 1.0:
+        return False
+    clearance = JAW_CLEARANCE * table.ball_radius
+    return all(_distance_to_segment(tip, start, cross) >= clearance for tip in (a, b))
+
+
+def _distance_to_segment(p: Vec2, a: Vec2, b: Vec2) -> float:
+    ab = b - a
+    length2 = ab.dot(ab)
+    t = 0.0 if length2 < _EPS else min(max((p - a).dot(ab) / length2, 0.0), 1.0)
+    return p.distance_to(a + ab * t)
 
 
 def _first_ball_hit(table: Table, pos: Vec2, d: Vec2, balls, max_t: float):

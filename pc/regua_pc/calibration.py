@@ -1,8 +1,10 @@
 """Calibração automática: acha as bordas das tabelas numa imagem do jogo.
 
 A borda onde a bola encosta é uma linha reta e longa onde a borracha da tabela (clara) encontra a
-sombra que ela faz no pano (escura). Isso vale para qualquer cor de mesa. O chute inicial vem do
-layout do 8 Ball Pool: a mesa ocupa uma fração fixa da altura da janela e fica centralizada.
+sombra que ela faz no pano (escura). Isso vale para qualquer cor de mesa. O ponto de partida são as
+bordas mais fortes em faixas largas da janela que formam uma mesa 2:1, porque o lugar da mesa muda
+com o formato da janela (no Google Play Games ainda tem a barra lateral). Se isso falhar, tenta o
+layout do celular: a mesa ocupa uma fração fixa da altura da janela e fica centralizada.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ TOP = 255.5 / 1080
 BOTTOM = 984.5 / 1080
 BALL_PER_HEIGHT = 22.0 / 729.0  # raio da bola / altura da mesa (fixo no jogo)
 MIN_EDGE_CONTRAST = 25.0
+EDGE_CANDIDATES = 5  # bordas mais fortes de cada lado testadas na busca larga
 
 
 def luminance(rgb: np.ndarray) -> np.ndarray:
@@ -31,11 +34,45 @@ def guess_table(width: int, height: int) -> Table:
 
 
 def find_table(rgb: np.ndarray, start: Table | None = None) -> Table | None:
-    """Refina as quatro bordas a partir de ``start`` (ou do chute pelo layout). Devolve None se o
-    resultado não parecer uma mesa (proporção longe de 2:1 ou bordas fracas)."""
+    """Refina as quatro bordas a partir de ``start`` (ou da busca larga e, se ela falhar, do chute
+    pelo layout). Devolve None se o resultado não parecer uma mesa (proporção longe de 2:1 ou bordas
+    fracas)."""
     h, w = rgb.shape[:2]
     lum = luminance(rgb.astype(np.float32))
-    t = start or guess_table(w, h)
+    starts = [start] if start else [_coarse_table(lum), guess_table(w, h)]
+    for t in starts:
+        found = _refine(lum, t) if t else None
+        if found:
+            return found
+    return None
+
+
+def _coarse_table(lum: np.ndarray) -> Table | None:
+    """Sem saber onde a mesa está: as bordas mais fortes de cada lado, medidas no meio da janela
+    (que sempre cai dentro da mesa), combinadas na mesa 2:1 com mais contraste somado."""
+    h, w = lum.shape
+    cols = np.arange(int(0.3 * w), int(0.7 * w), 2)
+    rows = np.arange(int(0.4 * h), int(0.6 * h), 2)
+    tops = _edge_candidates(lum, cols, np.arange(2, h // 2), axis=0, outside=-1)
+    bottoms = _edge_candidates(lum, cols, np.arange(h // 2, h - 3), axis=0, outside=+1)
+    lefts = _edge_candidates(lum, rows, np.arange(2, w // 2), axis=1, outside=-1)
+    rights = _edge_candidates(lum, rows, np.arange(w // 2, w - 3), axis=1, outside=+1)
+    best, best_score = None, 0.0
+    for top, s_top in tops:
+        for bottom, s_bottom in bottoms:
+            for left, s_left in lefts:
+                for right, s_right in rights:
+                    score = s_top + s_bottom + s_left + s_right
+                    if 1.9 <= (right - left) / (bottom - top) <= 2.1 and score > best_score:
+                        best, best_score = (left, top, right, bottom), score
+    if best is None:
+        return None
+    left, top, right, bottom = best
+    return Table(left, top, right, bottom, BALL_PER_HEIGHT * (bottom - top))
+
+
+def _refine(lum: np.ndarray, t: Table) -> Table | None:
+    h, w = lum.shape
     left, top, right, bottom = t.left, t.top, t.right, t.bottom
     for _ in range(3):
         tw, th = right - left, bottom - top
@@ -70,14 +107,7 @@ def _edge(lum: np.ndarray, span: np.ndarray, lo: float, hi: float, axis: int, ou
     positions = np.arange(max(2, int(lo)), min(size - 3, int(hi)) + 1)
     if len(positions) < 3:
         return None
-    if axis == 0:
-        before = lum[positions[:, None] + outside, span[None, :]]
-        after = lum[positions[:, None] - outside, span[None, :]]
-    else:
-        before = lum[span[None, :], positions[:, None] + outside]
-        after = lum[span[None, :], positions[:, None] - outside]
-    # Borracha clara do lado de fora, sombra escura do lado de dentro; a mediana ignora bolas e linhas.
-    scores = np.median(before - after, axis=1)
+    scores = _edge_scores(lum, span, positions, axis, outside)
     i = int(np.argmax(scores))
     if scores[i] < MIN_EDGE_CONTRAST:
         return None
@@ -88,3 +118,26 @@ def _edge(lum: np.ndarray, span: np.ndarray, lo: float, hi: float, axis: int, ou
         if denom < 0:
             offset = 0.5 * (a - c) / denom
     return float(positions[i] + offset)
+
+
+def _edge_candidates(lum: np.ndarray, span: np.ndarray, positions: np.ndarray, axis: int,
+                     outside: int) -> list[tuple[float, float]]:
+    """Os picos de contraste mais fortes (posição, contraste), para a busca larga."""
+    scores = _edge_scores(lum, span, positions, axis, outside)
+    peaks = [
+        i for i in range(1, len(scores) - 1)
+        if scores[i] >= MIN_EDGE_CONTRAST and scores[i] >= scores[i - 1] and scores[i] > scores[i + 1]
+    ]
+    peaks.sort(key=lambda i: -scores[i])
+    return [(float(positions[i]), float(scores[i])) for i in peaks[:EDGE_CANDIDATES]]
+
+
+def _edge_scores(lum: np.ndarray, span: np.ndarray, positions: np.ndarray, axis: int, outside: int) -> np.ndarray:
+    if axis == 0:
+        before = lum[positions[:, None] + outside, span[None, :]]
+        after = lum[positions[:, None] - outside, span[None, :]]
+    else:
+        before = lum[span[None, :], positions[:, None] + outside]
+        after = lum[span[None, :], positions[:, None] - outside]
+    # Borracha clara do lado de fora, sombra escura do lado de dentro; a mediana ignora bolas e linhas.
+    return np.median(before - after, axis=1)

@@ -46,6 +46,49 @@ def test_ghost_and_object_ball(degrees, offset):
     assert angle_between(res.object_ball - res.ghost, expected) < 0.3
 
 
+@pytest.mark.parametrize("degrees", [7.0, 27.0, 153.0, 211.0, 333.0])
+def test_object_direction_on_thin_cut(degrees):
+    # Corte fino na mesa do tamanho do Google Play Games: o jogo desenha só um pedacinho da linha da
+    # bola alvo, e meio grau de erro ali vira uns 4 px a cada 500 px de caminho.
+    t = Table(196.3, 214.1, 944.7, 588.2, 11.3)
+    scene = SyntheticTable(1074, 672, t)
+    cue = Vec2(560, 400)
+    d = Vec2.of_angle(math.radians(degrees))
+    target = cue + d * (9 * scene.r) + Vec2(-d.y, d.x) * (0.92 * 2 * scene.r)
+    scene.ball(target, (40, 150, 60))
+    scene.aim_at(cue, target, d, object_line=2.5)
+    res = AimDetector().detect(scene.frame(), t)
+    m = cue - target
+    b = m.dot(d)
+    true_ghost = cue + d * (-b - math.sqrt(b * b - (m.dot(m) - 4 * scene.r ** 2)))
+    assert angle_between(res.object_ball - res.ghost, target - true_ghost) < 0.15
+
+
+@pytest.mark.parametrize("distance,degrees,cut", [
+    (2.5, 222.0, -40.0),  # como no print: anel a 2,5 raios da branca, mira na diagonal
+    (2.5, 30.0, 40.0),
+    (2.8, 131.0, -15.0),
+    (3.2, 0.0, 60.0),
+    (3.2, 300.0, -60.0),
+])
+def test_ghost_close_to_cue(distance, degrees, cut):
+    # Anel quase encostado na branca: o traço da mira entre as duas tem menos de um raio, e um raio
+    # que cruza o anel e a linha da tangente vai mais longe que ele.
+    t = Table(196.3, 214.1, 944.7, 588.2, 11.3)
+    scene = SyntheticTable(1074, 672, t)
+    cue = Vec2(573.8, 402.9)
+    d = Vec2.of_angle(math.radians(degrees))
+    ghost = cue + d * (distance * scene.r)
+    target = ghost + Vec2.of_angle(math.radians(degrees + cut)) * (2 * scene.r)
+    scene.ball(target, (230, 140, 30))
+    scene.aim_at(cue, target, d, object_line=4.0)
+    res = AimDetector().detect(scene.frame(), t)
+    assert res is not None and res.ghost is not None
+    assert res.ghost.distance_to(ghost) < 1.0
+    assert angle_between(res.direction, d) < 1.0
+    assert angle_between(res.object_ball - res.ghost, target - ghost) < 0.3
+
+
 def test_previous_frame_hint_and_fallback():
     cue = Vec2(600, 280)
     before = SyntheticTable()
@@ -60,6 +103,20 @@ def test_previous_frame_hint_and_fallback():
     moved.aim_at(Vec2(300, 400), None, Vec2(-1, 0))
     res = detector.detect(moved.frame(), moved.table, prev)
     assert res.cue.distance_to(Vec2(300, 400)) < 3.0
+
+
+def test_cue_ball_next_to_whiter_stripe_ball():
+    # A listrada com o lado branco para cima tem mais branco que a branca coberta pela linha de mira.
+    scene = SyntheticTable()
+    scene.stripe_ball_white_up(Vec2(800, 150), (200, 20, 20))
+    cue = Vec2(600, 280)
+    d = Vec2.of_angle(math.radians(200))
+    target = cue + d * (8 * scene.r)
+    scene.ball(target, (40, 150, 60))
+    scene.aim_at(cue, target, d)
+    res = AimDetector().detect(scene.frame(), scene.table)
+    assert res is not None and res.cue.distance_to(cue) < 3.0
+    assert res.ghost is not None
 
 
 def test_nothing_without_guide():
@@ -84,10 +141,14 @@ def test_ball_finder_and_other_balls():
     assert len(res.balls) == len(balls)
 
 
-def test_auto_calibration_finds_cushions():
-    # Janela 16:9 com a mesa uns pixels fora do layout padrão (o chute inicial).
-    t = Table(196.0, 216.0, 1404.0, 818.0, 18.2)
-    scene = SyntheticTable(1600, 900, t)
+@pytest.mark.parametrize("width,height,t", [
+    # Janela 16:9 com a mesa uns pixels fora do layout padrão do celular.
+    (1600, 900, Table(196.0, 216.0, 1404.0, 818.0, 18.2)),
+    # Google Play Games: janela mais quadrada e com barra lateral, mesa menor e fora do centro.
+    (1074, 672, Table(196.3, 214.1, 944.7, 588.2, 11.3)),
+])
+def test_auto_calibration_finds_cushions(width, height, t):
+    scene = SyntheticTable(width, height, t)
     found = find_table(scene.frame())
     assert found is not None
     for a, b in ((found.left, t.left), (found.top, t.top), (found.right, t.right), (found.bottom, t.bottom)):
