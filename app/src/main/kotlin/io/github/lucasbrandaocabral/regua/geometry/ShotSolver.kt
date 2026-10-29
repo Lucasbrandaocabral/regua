@@ -13,6 +13,9 @@ enum class PathEnd {
     /** Entrou numa caçapa. */
     POCKET,
 
+    /** Chegou na boca da caçapa, mas bate numa das pontas. */
+    JAW,
+
     /** Encostou em outra bola. */
     BALL,
 
@@ -182,8 +185,9 @@ object ShotSolver {
             )
             points += wall
 
-            val pocket = pocketAt(table, wall, dir, vertical, horizontal)
+            val pocket = mouthAt(table, wall, dir, vertical, horizontal)
             if (pocket != null) {
+                if (!drops(table, pocket, pos, dir)) return BallPath(points, bounces, PathEnd.JAW, dir)
                 // Continua um pouco para dentro do buraco, só para a linha terminar na caçapa.
                 val depth = ((pocket.center - wall) dot dir).coerceIn(0.0, 3 * table.ballRadius)
                 points += wall + dir * depth
@@ -207,25 +211,50 @@ object ShotSolver {
         }
     }
 
-    private fun pocketAt(table: Table, p: Vec2, dir: Vec2, vertical: Boolean, horizontal: Boolean): Pocket? {
+    /**
+     * A caçapa em cuja boca a bola chega: o ponto onde ela encosta na linha das tabelas fica entre as
+     * pontas (fora delas é borracha reta e a bola bate).
+     */
+    private fun mouthAt(table: Table, p: Vec2, dir: Vec2, vertical: Boolean, horizontal: Boolean): Pocket? {
         val r = table.ballRadius
-        val cornerMouth = Table.CORNER_MOUTH * r
+        val jaw = Table.CORNER_JAW * r
         if (horizontal) {
             val top = dir.y < 0
-            if (p.x - table.minX <= cornerMouth) return table.pocket(if (top) PocketId.TOP_LEFT else PocketId.BOTTOM_LEFT)
-            if (table.maxX - p.x <= cornerMouth) return table.pocket(if (top) PocketId.TOP_RIGHT else PocketId.BOTTOM_RIGHT)
-            // Onde o centro da bola cruza a linha da tabela, um raio além do retângulo interno.
-            val crossX = p.x + dir.x / abs(dir.y) * r
-            if (abs(dir.y) >= Table.SIDE_MIN_APPROACH && abs(crossX - table.centerX) <= Table.SIDE_MOUTH * r) {
-                return table.pocket(if (top) PocketId.TOP_MIDDLE else PocketId.BOTTOM_MIDDLE)
-            }
+            if (p.x - table.left <= jaw) return table.pocket(if (top) PocketId.TOP_LEFT else PocketId.BOTTOM_LEFT)
+            if (table.right - p.x <= jaw) return table.pocket(if (top) PocketId.TOP_RIGHT else PocketId.BOTTOM_RIGHT)
+            if (abs(p.x - table.centerX) <= Table.SIDE_JAW * r) return table.pocket(if (top) PocketId.TOP_MIDDLE else PocketId.BOTTOM_MIDDLE)
         }
         if (vertical) {
             val left = dir.x < 0
-            if (p.y - table.minY <= cornerMouth) return table.pocket(if (left) PocketId.TOP_LEFT else PocketId.TOP_RIGHT)
-            if (table.maxY - p.y <= cornerMouth) return table.pocket(if (left) PocketId.BOTTOM_LEFT else PocketId.BOTTOM_RIGHT)
+            if (p.y - table.top <= jaw) return table.pocket(if (left) PocketId.TOP_LEFT else PocketId.TOP_RIGHT)
+            if (table.bottom - p.y <= jaw) return table.pocket(if (left) PocketId.BOTTOM_LEFT else PocketId.BOTTOM_RIGHT)
         }
         return null
+    }
+
+    /**
+     * A bola cai se o centro atravessa a boca entre as duas pontas sem passar a menos de
+     * [Table.JAW_CLEARANCE] raios de nenhuma delas. Bola rasante cruza a boca depois da ponta de lá.
+     */
+    private fun drops(table: Table, pocket: Pocket, start: Vec2, dir: Vec2): Boolean {
+        val (a, b) = table.mouth(pocket.id)
+        val ab = b - a
+        val n = Vec2(-ab.y, ab.x)
+        if (abs(dir dot n) < EPS) return false
+        val s = ((a - start) dot n) / (dir dot n)
+        if (s < 0) return true // já começou dentro da boca
+        val cross = start + dir * s
+        val along = ((cross - a) dot ab) / (ab dot ab)
+        if (along <= 0.0 || along >= 1.0) return false
+        val clearance = Table.JAW_CLEARANCE * table.ballRadius
+        return distanceToSegment(a, start, cross) >= clearance && distanceToSegment(b, start, cross) >= clearance
+    }
+
+    private fun distanceToSegment(p: Vec2, a: Vec2, b: Vec2): Double {
+        val ab = b - a
+        val length2 = ab dot ab
+        val t = if (length2 < EPS) 0.0 else (((p - a) dot ab) / length2).coerceIn(0.0, 1.0)
+        return p.distanceTo(a + ab * t)
     }
 
     /** Primeira bola de [balls] em que a bola em [pos] encosta andando em [dir], até a distância [maxT]. */

@@ -7,7 +7,8 @@ a régua sobre a bola branca e a bola alvo. Ela mostra:
 - **linha amarela**: caminho da branca, com até 5 tabelas;
 - **linha azul**: para onde a bola alvo vai depois do choque (fica **verde** quando cai na caçapa);
 - **linha tracejada**: a branca depois do choque (fica **vermelha** se ela também for cair);
-- **círculo tracejado**: a "bola fantasma", onde a branca está no instante do choque;
+- **círculo tracejado**: a "bola fantasma", onde a branca está no instante do choque, ou onde uma bola
+  bate na ponta da boca de uma caçapa (aí a linha não fica verde: a bola bate na boca e não cai limpa);
 - o **ângulo de corte** enquanto você ajusta.
 
 A régua não mexe no jogo: ela só desenha por cima. No modo manual ela nem olha a tela; no automático
@@ -43,6 +44,8 @@ O botão **AUTO** do painel mostra o estado: verde = seguindo a linha; amarelo =
 aparecendo (vez do adversário, bolas andando); cinza = desligado (toque para ligar de novo).
 
 A bola que o círculo do jogo toca é sempre a bola alvo no automático (o botão de alvo só vale no manual).
+A branca é a bola branca de onde sai a linha do jogo, então listradas com o lado branco para cima não
+confundem a régua.
 A régua também acha as outras bolas paradas na mesa: as linhas param quando chegam numa delas (com um
 círculo tracejado onde encostam) e, se a bola alvo bater em outra bola, ela mostra para onde essa outra vai
 (combinação). No triângulo fechado da saída as posições das bolas são aproximadas. Os quadros da tela são analisados no

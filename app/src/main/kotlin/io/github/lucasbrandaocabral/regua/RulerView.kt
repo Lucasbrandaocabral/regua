@@ -216,9 +216,12 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         canvas.restore()
     }
 
-    /** Se o caminho termina encostando numa bola, marca onde a bola em movimento fica no choque. */
+    /**
+     * Se o caminho termina encostando numa bola ou numa ponta da boca da caçapa, marca onde a bola em
+     * movimento fica no choque.
+     */
     private fun drawContact(canvas: Canvas, ball: BallPath, paint: Paint, r: Double) {
-        if (ball.end != PathEnd.BALL) return
+        if (ball.end != PathEnd.BALL && ball.end != PathEnd.JAW) return
         val p = ball.points.last()
         contactPaint.color = paint.color
         stroke(contactPaint) { canvas.drawCircle(p.x.f, p.y.f, r.f, it) }
@@ -263,6 +266,10 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         drawPath(canvas, shot.cue, cuePaint)
         shot.objectBall?.let { drawPath(canvas, it, if (it.end == PathEnd.POCKET) pottedPaint else objectPathPaint) }
         shot.cueAfter?.let { drawPath(canvas, it, if (it.end == PathEnd.POCKET) scratchPaint else cueAfterPaint) }
+        // A bola fantasma já marca o choque com o alvo; aqui só as pontas das caçapas.
+        if (shot.cue.end == PathEnd.JAW) drawContact(canvas, shot.cue, cuePaint, r.toDouble())
+        shot.objectBall?.takeIf { it.end == PathEnd.JAW }?.let { drawContact(canvas, it, objectPathPaint, r.toDouble()) }
+        shot.cueAfter?.takeIf { it.end == PathEnd.JAW }?.let { drawContact(canvas, it, cueAfterPaint, r.toDouble()) }
         shot.ghost?.let { g -> stroke(ghostPaint) { canvas.drawCircle(g.x.f, g.y.f, r, it) } }
 
         val editing = mode == Mode.AIM
@@ -350,9 +357,9 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         canvas.drawRect(t.left.f, t.top.f, t.right.f, t.bottom.f, calibrationPaint)
         canvas.drawRect(t.minX.f, t.minY.f, t.maxX.f, t.maxY.f, calibrationInnerPaint)
 
-        // Trechos de tabela que são boca de caçapa (bola que chega ali cai).
-        val corner = ((1 + Table.CORNER_MOUTH) * t.ballRadius).f
-        val side = (Table.SIDE_MOUTH * t.ballRadius).f
+        // Trechos de tabela que são boca de caçapa, entre as pontas.
+        val corner = (Table.CORNER_JAW * t.ballRadius).f
+        val side = (Table.SIDE_JAW * t.ballRadius).f
         for (y in floatArrayOf(t.top.f, t.bottom.f)) {
             canvas.drawLine(t.left.f, y, t.left.f + corner, y, mouthPaint)
             canvas.drawLine(t.right.f - corner, y, t.right.f, y, mouthPaint)

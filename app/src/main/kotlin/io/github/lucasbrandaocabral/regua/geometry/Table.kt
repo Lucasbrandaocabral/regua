@@ -42,18 +42,32 @@ data class Table(
         }
     }
 
+    /** As duas pontas da boca da caçapa, na linha das tabelas. */
+    fun mouth(id: PocketId): Pair<Vec2, Vec2> {
+        val j = CORNER_JAW * ballRadius
+        val s = SIDE_JAW * ballRadius
+        return when (id) {
+            PocketId.TOP_LEFT -> Vec2(left + j, top) to Vec2(left, top + j)
+            PocketId.TOP_RIGHT -> Vec2(right - j, top) to Vec2(right, top + j)
+            PocketId.BOTTOM_LEFT -> Vec2(left + j, bottom) to Vec2(left, bottom - j)
+            PocketId.BOTTOM_RIGHT -> Vec2(right - j, bottom) to Vec2(right, bottom - j)
+            PocketId.TOP_MIDDLE -> Vec2(centerX - s, top) to Vec2(centerX + s, top)
+            PocketId.BOTTOM_MIDDLE -> Vec2(centerX - s, bottom) to Vec2(centerX + s, bottom)
+        }
+    }
+
     companion object {
-        // Medidas em raios de bola, tiradas de um print do 8 Ball Pool (todas as mesas do jogo têm a
-        // mesma geometria; só muda a cor).
+        // Medidas em raios de bola, tiradas de prints do 8 Ball Pool (todas as mesas do jogo têm a
+        // mesma geometria; só muda a cor). As pontas da boca são onde a borracha reta acaba.
 
-        /** Abertura da caçapa de canto, contada a partir do canto do retângulo interno, em cada tabela. */
-        const val CORNER_MOUTH = 1.7
+        /** Ponta da caçapa de canto, contando da tabela do lado. */
+        const val CORNER_JAW = 2.2
 
-        /** Meia abertura da caçapa do meio, medida onde o centro da bola cruza a linha da tabela. */
-        const val SIDE_MOUTH = 1.5
+        /** Ponta da caçapa do meio, contando do meio da tabela. */
+        const val SIDE_JAW = 1.9
 
-        /** Bola que chega rasante demais na caçapa do meio bate na quina e não cai. */
-        const val SIDE_MIN_APPROACH = 0.4
+        /** A bola só cai se o centro passa pelo menos isso longe das duas pontas. */
+        const val JAW_CLEARANCE = 0.95
 
         const val CORNER_HOLE_OFFSET = 1.0
         const val CORNER_HOLE_RADIUS = 2.1

@@ -16,8 +16,9 @@ import kotlin.math.sin
  * Acha num quadro da tela a bola branca, a linha de mira que o jogo desenha saindo dela e, quando a
  * linha termina em outra bola, essa bola alvo.
  *
- * Usa só o que o 8 Ball Pool desenha: a branca é o círculo mais branco da mesa; as linhas de mira são
- * traços brancos finos (com contorno escuro) e o ponto de choque é um anel branco do tamanho da bola.
+ * Usa só o que o 8 Ball Pool desenha: a branca é a bola branca de onde sai uma linha; as linhas de
+ * mira são traços brancos finos (com contorno escuro) e o ponto de choque é um anel branco do tamanho
+ * da bola.
  * As medidas são em pixels do quadro e escalam com o raio da bola da [Table].
  */
 class AimDetector {
@@ -42,8 +43,11 @@ class AimDetector {
     /** Reta ajustada num traço: passa por [origin] na direção [direction] e o traço acaba em [end]. */
     private class Line(val origin: Vec2, val direction: Vec2, val end: Vec2)
 
-    /** A linha de mira achada, o centro da branca nela e o anel onde ela termina (se houver). */
-    private class Aim(val guide: Line, val cue: Vec2, val ring: Vec2?)
+    /**
+     * A linha de mira achada, o centro da branca nela, o anel onde ela termina (se houver) e o centro
+     * da branca achado só pelo branco dela.
+     */
+    private class Aim(val guide: Line, val cue: Vec2, val ring: Vec2?, val rough: Vec2)
 
     /** Um raio testado na busca da linha: até onde ele segue um traço fino a partir da branca. */
     private class Ray(val run: Double, val degrees: Int, val origin: Vec2)
@@ -62,9 +66,8 @@ class AimDetector {
     fun detect(frame: Frame, table: Table, findObjectBall: Boolean = true, previous: Result? = null): Result? {
         val r = table.ballRadius
         if (r < 3.0) return null
-        val roughCue = previous?.let { findCueBall(frame, table, near = it.cue) } ?: findCueBall(frame, table, near = null) ?: return null
         val hint = previous?.let { Math.toDegrees(atan2(it.direction.y, it.direction.x)) }
-        val aim = findAim(frame, table, roughCue, hint) ?: return null
+        val aim = findAim(frame, table, previous?.cue, hint) ?: return null
         var direction = aim.guide.direction
         var cue = aim.cue
         var guideLength = (aim.guide.end - cue) dot direction
@@ -78,12 +81,15 @@ class AimDetector {
                 direction = clean.direction
                 cue = cueCenterOnLine(frame, clean.origin, direction, r)
                 ring = findGhost(frame, cue, direction, ringDistance, r) ?: ring
+                // A bola fantasma fica na reta da mira, que aqui é mais precisa que o anel.
+                val center = ringCenter(frame, direction, ring, r)
+                ring = cue + direction * ((center - cue) dot direction)
             } else {
                 // Anel quase encostado na branca: o traço é curto demais para dar a direção, que passa
                 // a ser a do centro da branca ao centro do anel. A linha achada pode ser um raio torto
                 // que também chega no anel, então o centro da branca sai do branco dela, não da linha.
                 ring = ringCenter(frame, direction, ring, r)
-                cue = cueOnShortGuide(frame, table, roughCue, ring, r)
+                cue = cueOnShortGuide(frame, table, aim.rough, ring, r)
                 direction = (ring - cue).normalized()
             }
             guideLength = (ring - cue) dot direction
@@ -136,18 +142,18 @@ class AimDetector {
     }
 
     /**
-     * A branca é onde um quadrado do tamanho do miolo da bola fica mais cheio de branco. Com [near],
-     * procura só em volta desse ponto.
+     * Lugares onde um quadrado do tamanho do miolo da bola fica cheio de branco, do mais cheio para o
+     * menos (até [MAX_CUE_CANDIDATES], a pelo menos 1,5 raio um do outro). A branca é um deles, mas
+     * as listradas com o lado branco para cima também entram, e às vezes com mais branco que ela.
      */
-    private fun findCueBall(frame: Frame, table: Table, near: Vec2?): Vec2? {
+    private fun cueCandidates(frame: Frame, table: Table): List<Vec2> {
         val r = table.ballRadius
         val half = max(2, (0.6 * r).roundToInt())
-        val reach = 3 * r
-        val x0 = max(0, max(table.minX, (near?.x ?: table.minX) - reach).toInt())
-        val x1 = min(frame.width - 1, ceil(min(table.maxX, (near?.x ?: table.maxX) + reach)).toInt())
-        val y0 = max(0, max(table.minY, (near?.y ?: table.minY) - reach).toInt())
-        val y1 = min(frame.height - 1, ceil(min(table.maxY, (near?.y ?: table.maxY) + reach)).toInt())
-        if (x1 <= x0 || y1 <= y0) return null
+        val x0 = max(0, table.minX.toInt())
+        val x1 = min(frame.width - 1, ceil(table.maxX).toInt())
+        val y0 = max(0, table.minY.toInt())
+        val y1 = min(frame.height - 1, ceil(table.maxY).toInt())
+        if (x1 <= x0 || y1 <= y0) return emptyList()
 
         // Imagem integral da máscara de branco, com margem para as caixas encostadas na borda.
         val ix0 = max(0, x0 - half)
@@ -168,9 +174,13 @@ class AimDetector {
             }
         }
 
-        var best = 0
-        var bestX = 0
-        var bestY = 0
+        // Caixas cheias o bastante, como (soma, posição) num Long para ordenar sem criar objetos;
+        // no empate fica a que vem antes na varredura.
+        val side = 2 * half + 1
+        val minSum = MIN_CUE_FILL * side * side
+        val columns = (x1 - x0) / 2 + 1
+        var full = LongArray(64)
+        var count = 0
         for (cy in y0..y1 step 2) {
             val top = (cy - half - iy0).coerceIn(0, h) * stride
             val bottom = (cy + half - iy0 + 1).coerceIn(0, h) * stride
@@ -178,19 +188,53 @@ class AimDetector {
                 val left = (cx - half - ix0).coerceIn(0, w)
                 val right = (cx + half - ix0 + 1).coerceIn(0, w)
                 val sum = integral[bottom + right] - integral[top + right] - integral[bottom + left] + integral[top + left]
-                if (sum > best) {
-                    best = sum
-                    bestX = cx
-                    bestY = cy
+                if (sum < minSum) continue
+                if (count == full.size) full = full.copyOf(2 * count)
+                val index = (cy - y0) / 2 * columns + (cx - x0) / 2
+                full[count++] = (sum.toLong() shl 32) or (Int.MAX_VALUE - index).toLong()
+            }
+        }
+        full.sort(0, count)
+
+        val peaks = ArrayList<Vec2>()
+        for (i in count - 1 downTo 0) {
+            val index = Int.MAX_VALUE - (full[i] and 0xFFFFFFFFL).toInt()
+            val p = Vec2((x0 + index % columns * 2).toDouble(), (y0 + index / columns * 2).toDouble())
+            if (peaks.any { it.distanceTo(p) < 1.5 * r }) continue
+            peaks += p
+            if (peaks.size == MAX_CUE_CANDIDATES) break
+        }
+        return peaks.map { peak ->
+            var center = peak
+            repeat(2) { center = whiteCentroid(frame, center, 0.85 * r) ?: center }
+            center
+        }
+    }
+
+    /**
+     * Teste barato antes da busca da linha: uma linha que sai da bola cruza pelo menos dois dos
+     * círculos de 1,5 a 2,4 raios em volta dela. Não todos: com o anel perto da branca, um deles pode
+     * cair inteiro no contorno escuro do anel. Fora da mesa não conta (os pontos brancos das tabelas).
+     */
+    private fun lineLeaves(frame: Frame, table: Table, c: Vec2, r: Double): Boolean {
+        val x0 = table.left.toInt() - 2
+        val x1 = ceil(table.right).toInt() + 2
+        val y0 = table.top.toInt() - 2
+        val y1 = ceil(table.bottom).toInt() + 2
+        var crossed = 0
+        for (radius in doubleArrayOf(1.5 * r, 1.8 * r, 2.1 * r, 2.4 * r)) {
+            val n = (2 * PI * radius).toInt() + 1
+            for (i in 0 until n) {
+                val a = 2 * PI * i / n
+                val x = (c.x + cos(a) * radius).roundToInt()
+                val y = (c.y + sin(a) * radius).roundToInt()
+                if (x in x0..x1 && y in y0..y1 && frame.isWhite(x, y)) {
+                    crossed++
+                    break
                 }
             }
         }
-        val side = 2 * half + 1
-        if (best < MIN_CUE_FILL * side * side) return null
-
-        var center = Vec2(bestX.toDouble(), bestY.toDouble())
-        repeat(2) { center = whiteCentroid(frame, center, 0.85 * r) ?: center }
-        return center
+        return crossed >= 2
     }
 
     private fun whiteCentroid(frame: Frame, c: Vec2, radius: Double): Vec2? {
@@ -242,25 +286,34 @@ class AimDetector {
     }
 
     /**
-     * A linha de mira saindo da branca e o anel onde ela termina. Um traço curto só vale se terminar
-     * num anel oco. Se a linha achada não acaba num anel, procura um anel quase encostado na branca:
-     * com ele tão perto, o traço até ele é curto demais para a busca pela linha.
+     * A branca é a bola branca de onde sai a linha de mira: das listradas com o lado branco para cima
+     * não sai linha. Se mais de uma tiver linha (a da bola alvo volta pela mira numa tacada reta),
+     * vale a que termina num anel oco; um traço curto só vale se terminar nele. Se nenhuma linha
+     * achada acaba num anel, procura um anel quase encostado numa delas: com ele tão perto, o traço
+     * até ele é curto demais para a busca pela linha. [near] é a branca do quadro anterior (testada
+     * primeiro) e [hintDegrees] a direção da mira nele.
      */
-    private fun findAim(frame: Frame, table: Table, roughCue: Vec2, hintDegrees: Double?): Aim? {
+    private fun findAim(frame: Frame, table: Table, near: Vec2?, hintDegrees: Double?): Aim? {
         val r = table.ballRadius
-        val guide = hintDegrees?.let { findGuide(frame, table, roughCue, aroundDegrees = it) }
-            ?: findGuide(frame, table, roughCue, aroundDegrees = null)
+        var candidates = cueCandidates(frame, table).filter { lineLeaves(frame, table, it, r) }
+        if (near != null) candidates = candidates.sortedBy { it.distanceTo(near) > 3 * r }
         var fallback: Aim? = null
-        if (guide != null) {
+        for (rough in candidates) {
+            val guide = hintDegrees?.let { findGuide(frame, table, rough, aroundDegrees = it) }
+                ?: findGuide(frame, table, rough, aroundDegrees = null)
+                ?: continue
             val cue = cueCenterOnLine(frame, guide.origin, guide.direction, r)
             val length = (guide.end - cue) dot guide.direction
             val ring = findGhost(frame, cue, guide.direction, length, r)
-            if (ring != null && whiteFraction(frame, ring, 0.5 * r) < HOLLOW_RING) return Aim(guide, cue, ring)
-            if (length - 1.5 * r >= minGuideSamples(r)) fallback = Aim(guide, cue, ring)
+            if (ring != null && whiteFraction(frame, ring, 0.5 * r) < HOLLOW_RING) return Aim(guide, cue, ring, rough)
+            if (fallback == null && length - 1.5 * r >= minGuideSamples(r)) fallback = Aim(guide, cue, ring, rough)
         }
-        val close = findCloseRing(frame, roughCue, r) ?: return fallback
-        val u = (close - roughCue).normalized()
-        return Aim(Line(roughCue, u, close), cueCenterOnLine(frame, roughCue, u, r), close)
+        for (rough in candidates) {
+            val close = findCloseRing(frame, rough, r) ?: continue
+            val u = (close - rough).normalized()
+            return Aim(Line(rough, u, close), cueCenterOnLine(frame, rough, u, r), close, rough)
+        }
+        return fallback
     }
 
     /**
@@ -279,7 +332,8 @@ class AimDetector {
             val center = aroundDegrees.roundToInt()
             center - HINT_DEGREES..center + HINT_DEGREES
         }
-        val offsets = doubleArrayOf(0.0, -0.5 * r, 0.5 * r, -r, r)
+        // Com a dica do quadro anterior a branca já está bem centrada na linha.
+        val offsets = if (aroundDegrees == null) doubleArrayOf(0.0, -0.5 * r, 0.5 * r, -r, r) else doubleArrayOf(0.0)
         val rays = ArrayList<Ray>()
         for (deg in degrees) {
             val u = Vec2.ofAngle(Math.toRadians(deg.toDouble()))
@@ -713,10 +767,64 @@ class AimDetector {
         val coarse = aimAngle + Math.toRadians(OBJECT_STEP_DEG * ((lo + hi) / 2.0 - OBJECT_CANDIDATES / 2))
 
         // A linha da bola alvo é colinear com o anel: começa no centro da bola (2 raios do anel).
-        val line = fitLine(frame, table, ghost, coarse, 3.15 * r, max(6, (0.6 * r).toInt()))
-        val direction = line?.direction ?: Vec2.ofAngle(coarse)
+        val minSamples = max(6, (0.6 * r).toInt())
+        val line = fitLine(frame, table, ghost, coarse, 3.15 * r, minSamples)
+        var direction = line?.direction ?: Vec2.ofAngle(coarse)
+        if (line != null) {
+            // Reta passando pelo centro do anel: o braço até o traço é bem mais comprido que o próprio
+            // traço (curto nos cortes finos), então o ângulo sai bem mais firme.
+            val start = ghost + direction * (2 * r)
+            val refined = lineThroughPoint(ghost, strokeCenters(frame, table, start, direction, 1.2 * r, ((line.end - start) dot direction) - 2), minSamples)
+            if (refined != null) direction = if ((refined dot direction) > 0) refined else Vec2(-refined.x, -refined.y)
+        }
         val center = ghost + direction * (2 * r)
         return Line(center, direction, line?.end ?: center)
+    }
+
+    /**
+     * Centro do traço branco com fração de pixel num corte perpendicular a cada pixel entre [from] e
+     * [to] (medidos de [origin] na direção [dir]): média da brancura no corte, porque a borda do traço
+     * é suavizada.
+     */
+    private fun strokeCenters(frame: Frame, table: Table, origin: Vec2, dir: Vec2, from: Double, to: Double): List<Vec2> {
+        val reach = max(3.0, 0.35 * table.ballRadius)
+        val steps = (2 * reach / 0.25).toInt()
+        val points = ArrayList<Vec2>()
+        var s = from
+        while (s < to) {
+            val cx = origin.x + dir.x * s
+            val cy = origin.y + dir.y * s
+            var sum = 0.0
+            var total = 0.0
+            for (i in 0..steps) {
+                val k = -reach + 0.25 * i
+                val weight = max(0.0, whiteness(frame, cx - dir.y * k, cy + dir.x * k) - WHITE_BASE)
+                sum += weight * k
+                total += weight
+            }
+            if (total > 0.0) {
+                val k = sum / total
+                points += Vec2(cx - dir.y * k, cy + dir.x * k)
+            }
+            s += 1.0
+        }
+        return points
+    }
+
+    /** Direção da reta por [p] mais perto de [points] (mínimos quadrados perpendiculares), ou null com poucos pontos. */
+    private fun lineThroughPoint(p: Vec2, points: List<Vec2>, minPoints: Int): Vec2? {
+        if (points.size < minPoints) return null
+        var sxx = 0.0
+        var syy = 0.0
+        var sxy = 0.0
+        for (q in points) {
+            val dx = q.x - p.x
+            val dy = q.y - p.y
+            sxx += dx * dx
+            syy += dy * dy
+            sxy += dx * dy
+        }
+        return Vec2.ofAngle(0.5 * atan2(2 * sxy, sxx - syy))
     }
 
     /** Cor do pano em volta do anel: mediana de um anel de amostras (a bola alvo ocupa só uma parte dele). */
@@ -768,6 +876,9 @@ class AimDetector {
     private companion object {
         /** Fração do quadrado central que precisa ser branca para ser a bola branca. */
         const val MIN_CUE_FILL = 0.6
+
+        /** Bolas brancas testadas (as listradas com o lado branco para cima também são). */
+        const val MAX_CUE_CANDIDATES = 6
 
         /** Raio (em raios de bola) em volta da branca onde não procura outras bolas (a mão do jogo fica ali). */
         const val CUE_EXCLUSION = 2.2

@@ -58,17 +58,32 @@ class ShotSolverTest {
     }
 
     @Test
-    fun shallowApproachIsRejectedBySidePocket() {
-        // Chega no meio da tabela de cima quase paralela a ela: bate na quina e volta.
+    fun shallowApproachHitsTheSidePocketJaw() {
+        // Chega no meio da tabela de cima quase paralela a ela: cruza a boca depois da ponta de lá e bate nela.
         val path = ShotSolver.trace(table, Vec2(100.0, 30.0), Vec2(1.0, -0.2), maxCushions = 1)
-        assertVec(Vec2(200.0, 10.0), path.bounces.single())
-        assertTrue(path.pocket?.id != PocketId.TOP_MIDDLE)
+        assertEquals(PathEnd.JAW, path.end)
+        assertVec(Vec2(200.0, 10.0), path.points.last())
+        assertNull(path.pocket)
     }
 
     @Test
     fun steepApproachEntersSidePocket() {
-        val path = ShotSolver.trace(table, Vec2(180.0, 30.0), Vec2(1.0, -1.0), maxCushions = 1)
+        val path = ShotSolver.trace(table, Vec2(170.0, 30.0), Vec2(1.0, -1.0), maxCushions = 1)
         assertEquals(PocketId.TOP_MIDDLE, path.pocket?.id)
+    }
+
+    @Test
+    fun pocketJaws() {
+        // Reta na caçapa do meio: a boca tem 1,9 raio de cada lado, então o centro pode passar a até
+        // ~0,95 raio do meio sem encostar nas pontas.
+        assertEquals(PathEnd.POCKET, ShotSolver.trace(table, Vec2(208.0, 150.0), Vec2(0.0, -1.0), 3).end)
+        assertEquals(PathEnd.JAW, ShotSolver.trace(table, Vec2(212.0, 150.0), Vec2(0.0, -1.0), 3).end)
+        // Encostada na tabela de baixo até o canto: cai.
+        assertEquals(PocketId.BOTTOM_RIGHT, ShotSolver.trace(table, Vec2(200.0, 190.0), Vec2(1.0, 0.0), 3).pocket?.id)
+        // Encosta na tabela 2,5 raios antes do canto: ainda é borracha reta, então bate e volta.
+        val nearCorner = ShotSolver.trace(table, Vec2(375.0, 100.0), Vec2(0.0, 1.0), 1)
+        assertNull(nearCorner.pocket)
+        assertVec(Vec2(375.0, 190.0), nearCorner.bounces.single())
     }
 
     @Test

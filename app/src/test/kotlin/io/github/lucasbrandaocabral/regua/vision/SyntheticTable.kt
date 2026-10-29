@@ -7,13 +7,17 @@ import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Desenha quadros parecidos com os do 8 Ball Pool para testar o [AimDetector]: pano com degradê,
  * bolas, taco e as linhas de mira brancas com contorno escuro.
  */
-class SyntheticTable(val width: Int = 1200, val height: Int = 560) {
-    val table = Table(left = 100.0, top = 30.0, right = 1100.0, bottom = 530.0, ballRadius = 15.0)
+class SyntheticTable(
+    val width: Int = 1200,
+    val height: Int = 560,
+    val table: Table = Table(left = 100.0, top = 30.0, right = 1100.0, bottom = 530.0, ballRadius = 15.0),
+) {
     val r = table.ballRadius
     val pixels = IntArray(width * height)
 
@@ -22,13 +26,13 @@ class SyntheticTable(val width: Int = 1200, val height: Int = 560) {
     private val outline = 0.11 * r
 
     init {
-        val cx = width / 2.0
-        val cy = height / 2.0
+        val cx = (table.left + table.right) / 2
+        val cy = (table.top + table.bottom) / 2
         for (y in 0 until height) {
             for (x in 0 until width) {
                 val inside = x >= table.left && x <= table.right && y >= table.top && y <= table.bottom
                 pixels[y * width + x] = if (inside) {
-                    val t = min(1.0, hypot((x - cx) / cx, (y - cy) / cy))
+                    val t = min(1.0, hypot((x - cx) / (width / 2.0), (y - cy) / (height / 2.0)))
                     rgb(mix(127, 34, t), mix(198, 126, t), mix(218, 165, t))
                 } else {
                     rgb(150, 30, 20)
@@ -50,6 +54,13 @@ class SyntheticTable(val width: Int = 1200, val height: Int = 560) {
         // Círculo branco do número.
         fillDisc(c, 0.45 * this.r, rgb(245, 245, 240))
         fillDisc(c, 0.15 * this.r, rgb(10, 10, 10))
+    }
+
+    /** Listrada com o lado branco para cima: miolo branco e a cor só na borda. */
+    fun stripeBallWhiteUp(c: Vec2, r: Int, g: Int, b: Int) {
+        fillDisc(c, this.r + 1, rgb(20, 20, 20))
+        fillDisc(c, this.r, rgb(r, g, b))
+        fillDisc(c, 0.8 * this.r, rgb(250, 250, 248))
     }
 
     fun cueBall(c: Vec2) {
@@ -79,8 +90,11 @@ class SyntheticTable(val width: Int = 1200, val height: Int = 560) {
         strokeRing(c, r, lineHalf, rgb(255, 255, 255))
     }
 
-    /** Desenha tudo o que o jogo mostra quando a branca em [cue] mira em [direction] e acerta [target]. */
-    fun aimAt(cue: Vec2, target: Vec2?, direction: Vec2, ghostOnCushion: Vec2? = null) {
+    /**
+     * Desenha tudo o que o jogo mostra quando a branca em [cue] mira em [direction] e acerta [target].
+     * [objectLine] é o comprimento da linha da bola alvo, em raios (curta nos cortes finos).
+     */
+    fun aimAt(cue: Vec2, target: Vec2?, direction: Vec2, ghostOnCushion: Vec2? = null, objectLine: Double = 6.0) {
         cue(cue, direction)
         cueBall(cue)
         if (target == null) {
@@ -100,7 +114,7 @@ class SyntheticTable(val width: Int = 1200, val height: Int = 560) {
         guide(cue, ghost)
         ring(ghost)
         guide(ghost, ghost + tangent * (2.3 * r))
-        guide(target, target + n * (6 * r))
+        guide(target, target + n * (objectLine * r))
     }
 
     private fun fillDisc(c: Vec2, radius: Double, color: Int) = fillDisc(c, radius) { _, _ -> color }
@@ -111,21 +125,35 @@ class SyntheticTable(val width: Int = 1200, val height: Int = 560) {
         }
     }
 
+    // As linhas têm a borda suavizada, como no jogo: o pixel cortado pela borda mistura as duas cores.
     private fun stroke(a: Vec2, b: Vec2, half: Double, color: Int) {
         val ab = b - a
         val len2 = ab dot ab
-        forBox(min(a.x, b.x) - half, min(a.y, b.y) - half, max(a.x, b.x) + half, max(a.y, b.y) + half) { x, y ->
+        val pad = half + 1
+        forBox(min(a.x, b.x) - pad, min(a.y, b.y) - pad, max(a.x, b.x) + pad, max(a.y, b.y) + pad) { x, y ->
             val p = Vec2(x.toDouble(), y.toDouble())
             val t = if (len2 == 0.0) 0.0 else (((p - a) dot ab) / len2).coerceIn(0.0, 1.0)
-            if ((a + ab * t).distanceTo(p) <= half) pixels[y * width + x] = color
+            paint(x, y, half + 0.5 - (a + ab * t).distanceTo(p), color)
         }
     }
 
     private fun strokeRing(c: Vec2, radius: Double, half: Double, color: Int) {
-        val outer = radius + half
+        val outer = radius + half + 1
         forBox(c.x - outer, c.y - outer, c.x + outer, c.y + outer) { x, y ->
-            if (kotlin.math.abs(hypot(x - c.x, y - c.y) - radius) <= half) pixels[y * width + x] = color
+            paint(x, y, half + 0.5 - kotlin.math.abs(hypot(x - c.x, y - c.y) - radius), color)
         }
+    }
+
+    private fun paint(x: Int, y: Int, coverage: Double, color: Int) {
+        val alpha = coverage.coerceIn(0.0, 1.0)
+        if (alpha == 0.0) return
+        val old = pixels[y * width + x]
+        fun blend(a: Int, b: Int) = (a + (b - a) * alpha).roundToInt()
+        pixels[y * width + x] = rgb(
+            blend(Frame.red(old), Frame.red(color)),
+            blend(Frame.green(old), Frame.green(color)),
+            blend(Frame.blue(old), Frame.blue(color)),
+        )
     }
 
     private inline fun forBox(x0: Double, y0: Double, x1: Double, y1: Double, action: (Int, Int) -> Unit) {
