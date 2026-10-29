@@ -90,6 +90,48 @@ def test_ghost_close_to_cue(distance, degrees, cut):
     assert angle_between(res.object_ball - res.ghost, target - ghost) < 0.3
 
 
+@pytest.mark.parametrize("distance,degrees,cut", [
+    (0.6, 40.0, 30.0), (0.9, 200.0, -45.0), (1.3, 300.0, 60.0), (1.8, 115.0, -20.0), (1.1, 0.0, 0.0),
+])
+def test_ring_over_the_cue_ball(distance, degrees, cut):
+    # Branca quase encostada na bola alvo: o anel fica por cima da própria branca e cobre o miolo dela.
+    scene = SyntheticTable()
+    cue = Vec2(603.3, 281.7)
+    d = Vec2.of_angle(math.radians(degrees))
+    ghost = cue + d * (distance * scene.r)
+    target = ghost + Vec2.of_angle(math.radians(degrees + cut)) * (2 * scene.r)
+    scene.ball(target, (120, 30, 20), striped=True)
+    scene.aim_at(cue, target, d)
+    res = AimDetector().detect(scene.frame(), scene.table)
+    assert res is not None and res.ghost is not None
+    assert res.cue.distance_to(cue) < 2.0
+    assert res.ghost.distance_to(ghost) < 1.5
+    assert angle_between(res.object_ball - res.ghost, target - ghost) < 1.5
+
+
+def test_ring_on_cushion_with_ball_is_a_target():
+    scene = SyntheticTable()
+    cue = Vec2(500, 300)
+    target = Vec2(800, scene.table.max_y - 2)
+    d = (target - Vec2(0, 0.8 * 2 * scene.r) - cue).normalized()
+    scene.ball(target, (40, 150, 60))
+    scene.aim_at(cue, target, d)
+    res = AimDetector().detect(scene.frame(), scene.table)
+    assert res is not None and res.ghost is not None
+    assert res.object_ball.distance_to(target) < 3.0
+
+
+def test_simulated_game_scenes():
+    # Mesas parecidas com as do jogo (simulador.py), duas de cada tipo de tacada.
+    from tests.game_scene import KINDS, TABLE, random_scene
+    import simulador
+    ok = 0
+    for i in range(10):
+        rgb, truth = random_scene(4242 + i, KINDS[i % len(KINDS)])
+        ok += simulador.check(AimDetector().detect(rgb, TABLE), truth) is None
+    assert ok >= 9
+
+
 def test_previous_frame_hint_and_fallback():
     cue = Vec2(600, 280)
     before = SyntheticTable()

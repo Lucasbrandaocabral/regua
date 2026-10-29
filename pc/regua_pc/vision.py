@@ -17,6 +17,15 @@ from .geometry import Table, Vec2
 TABLE_EDGE_CONTRAST = 40.0  # borda de uma tabela: na mesa do jogo passa de 90; no menu, perto de 0
 MIN_TABLE_EDGES = 3  # das quatro tabelas (a barra de um print pode cobrir uma)
 MIN_CUE_FILL = 0.6  # fração do quadrado central que precisa ser branca para ser a branca
+OVERLAP_CUE_FILL = 0.3  # com o anel por cima da branca, sobra bem menos branco nela
+OVERLAP_CANDIDATES = 10  # e ela pode ficar atrás de listradas com mais branco na lista
+OVERLAP_MIN, OVERLAP_MAX = 0.1, 1.95  # em raios: anel por cima da branca (branca quase encostada no alvo)
+OVERLAP_RING_SCORE = 0.6  # fração dos pontos do anel com o miolo claro entre o contorno escuro
+RING_BAND = 0.145  # em raios: do miolo do anel até o meio do contorno escuro (traço de 0,09 + 0,11 r)
+RING_CONTRAST = 60.0  # brancura do miolo do anel menos a do contorno
+RING_STROKE = 0.3  # em raios: pontos da borda da branca mais perto que isso do anel estão no traço dele
+SHADOW_RATIO_SPREAD = 0.15  # sombra: cada canal do pixel dividido pelo do pano dá quase o mesmo valor
+EDGE_LEVEL = 130.0  # brancura no meio do caminho entre a branca (~200+) e o contorno escuro dela
 MAX_CUE_CANDIDATES = 6  # bolas brancas testadas (as listradas com o lado branco para cima também são)
 HOLLOW_RING = 0.4  # fração branca máxima no miolo do anel (a branca ou outra bola no fim da linha é cheia)
 WHITE_BASE = 150.0  # brancura (menor canal de cor) do pano mais claro; acima disso conta como traço
@@ -116,6 +125,23 @@ def table_visible(rgb: np.ndarray, t: Table) -> bool:
     return edges >= MIN_TABLE_EDGES
 
 
+def _fit_circle(px: np.ndarray, py: np.ndarray, outlier: float = 0.8) -> tuple[Vec2 | None, float]:
+    """Círculo por mínimos quadrados (Kåsa), tirando um a um o ponto mais longe dele enquanto algum
+    passar de ``outlier`` px (alguns pontos ruins puxam tanto o primeiro ajuste que tirar todos os
+    longe de uma vez levaria os bons junto); (None, 0) se sobrarem menos de 8."""
+    keep = np.ones(len(px), dtype=bool)
+    while keep.sum() >= 8:
+        a = np.stack([2 * px[keep], 2 * py[keep], np.ones(keep.sum())], axis=1)
+        cx, cy, c = np.linalg.lstsq(a, px[keep] ** 2 + py[keep] ** 2, rcond=None)[0]
+        fit_r = math.sqrt(max(c + cx * cx + cy * cy, 0.0))
+        err = np.where(keep, np.abs(np.hypot(px - cx, py - cy) - fit_r), -1.0)
+        worst = int(np.argmax(err))
+        if err[worst] <= outlier:
+            return Vec2(float(cx), float(cy)), fit_r
+        keep[worst] = False
+    return None, 0.0
+
+
 @dataclass
 class _Line:
     origin: Vec2
@@ -146,10 +172,12 @@ class AimDetector:
         if aim is None:
             return None
 
-        guide, cue, ring, rough = aim
+        guide, cue, ring, rough, final = aim
         direction = guide.direction
         guide_length = (guide.end - cue).dot(direction)
-        if ring is not None:
+        if final:
+            guide_length = (ring - cue).dot(direction)
+        elif ring is not None:
             # Dentro do anel a linha se mistura com ele: refaz o ajuste só com o trecho limpo.
             ring_distance = (ring - cue).dot(direction)
             clean = self._collect_and_fit(cue, direction, 1.5 * r, self._min_guide_samples(), stop_at=ring_distance - 1.5 * r)
@@ -168,9 +196,17 @@ class AimDetector:
                 cue = self._cue_on_short_guide(rough, ring, r)
                 direction = (ring - cue).normalized()
             guide_length = (ring - cue).dot(direction)
-        # Anel colado na tabela é a branca batendo na tabela, não numa bola.
-        ghost = ring if ring is not None and self._inside_inner(ring, 0.6 * r) else None
-        obj = self._find_object_ball(ghost, direction) if ghost is not None else None
+        ghost, obj = None, None
+        if ring is not None:
+            obj = self._find_object_ball(ring, direction)
+            if self._inside_inner(ring, 0.6 * r):
+                ghost = ring
+            elif obj is not None and (obj.end - obj.origin).length > 0.5 * r:
+                # Anel colado na tabela, mas com uma bola encostada nele: o jogo desenha a linha dela.
+                ghost = ring
+            else:
+                # Anel colado na tabela é a branca batendo na tabela, não numa bola.
+                obj = None
 
         balls = [
             b for b in self._other_balls(cue)
@@ -237,15 +273,115 @@ class AimDetector:
                 length = (guide.end - cue).dot(guide.direction)
                 ring = self._find_ghost(cue, guide.direction, length, r)
                 if ring is not None and self._white_fraction(ring, 0.5 * r) < HOLLOW_RING:
-                    return guide, cue, ring, rough
+                    return guide, cue, ring, rough, False
                 if length - 1.5 * r >= self._min_guide_samples():
-                    fallback = fallback or (guide, cue, ring, rough)
+                    fallback = fallback or (guide, cue, ring, rough, False)
         for rough in candidates:
             ring = self._find_close_ring(rough, r)
             if ring is not None:
                 u = (ring - rough).normalized()
-                return _Line(rough, u, ring), self._cue_center_on_line(rough, u, r), ring, rough
-        return fallback
+                return _Line(rough, u, ring), self._cue_center_on_line(rough, u, r), ring, rough, False
+        # Branca quase encostada na bola alvo: o anel fica por cima dela e a linha da bola alvo pode
+        # passar por uma linha de mira saindo de outra bola; por isso vem antes do ``fallback``.
+        return self._find_overlap_aim(near) or fallback
+
+    def _find_overlap_aim(self, near: Vec2 | None):
+        """Anel por cima da própria branca (a menos de 2 raios dela): quase não sobra traço de mira e o
+        miolo da branca fica coberto pelo anel. Procura o anel pelo traço dele (miolo claro entre
+        contorno escuro, que aparece até em cima da bola) e confirma com a bola alvo encostada nele. O centro da branca sai da
+        borda dela, e a direção, do centro da branca ao centro do anel."""
+        r = self._table.ball_radius
+        candidates = self._cue_candidates(OVERLAP_CUE_FILL, OVERLAP_CANDIDATES)
+        if near is not None:
+            candidates.sort(key=lambda c: c.distance_to(near) > 3 * r)
+        for rough in candidates:
+            # Saem linhas dali (a da branca depois do choque e a da bola alvo): teste barato antes da
+            # busca do anel, que é cara.
+            if not self._line_leaves(rough, r):
+                continue
+            ring = self._find_overlap_ring(rough, r)
+            if ring is None:
+                continue
+            cue = self._cue_center_by_edge(rough, ring, r)
+            if cue is not None:
+                # De novo, já do centro certo (os raios cruzam a borda de frente e o lado do taco fica exato).
+                cue = self._cue_center_by_edge(cue, ring, r) or cue
+            else:
+                # Anel quase todo em cima da borda da branca (a meio raio ou menos): sobra pouca borda
+                # limpa. Fica o centro pelo branco; a bola alvo e a linha dela continuam exatas.
+                cue = rough
+            d = ring.distance_to(cue)
+            if not OVERLAP_MIN * r <= d <= OVERLAP_MAX * r:
+                continue
+            ring = self._ring_center(Vec2(0.0, 0.0), ring, r, avoid=cue) or ring
+            u = (ring - cue).normalized()
+            # A bola alvo encostada no anel confirma (a linha dela pode sumir na borracha, se ela vai
+            # direto para a tabela).
+            if self._find_object_ball(ring, u) is None:
+                continue
+            return _Line(cue, u, ring), cue, ring, rough, True
+        return None
+
+    def _find_overlap_ring(self, c: Vec2, r: float) -> Vec2 | None:
+        """O anel a ``OVERLAP_MIN``..``OVERLAP_MAX`` raios de ``c`` (o centro aproximado da branca, que
+        pode estar uns pixels fora porque o anel cobre parte dela). Por cima da branca o miolo branco do
+        anel some no branco da bola, mas o contorno escuro dos dois lados continua: o teste é miolo
+        claro com escuro logo dentro e logo fora, que vale tanto no pano quanto em cima da bola."""
+        thetas = np.radians(np.arange(0.0, 360.0, CLOSE_RING_STEP_DEG))
+        rhos = np.arange(0.0, OVERLAP_MAX * r + 6, 1.0)
+        cos_t, sin_t = np.cos(thetas), np.sin(thetas)
+        gx = (c.x + cos_t[:, None] * rhos[None, :])[..., None]
+        gy = (c.y + sin_t[:, None] * rhos[None, :])[..., None]
+        band = RING_BAND * r
+        core = self._whiteness(gx + _RING_COS * r, gy + _RING_SIN * r)
+        dark = np.maximum(self._whiteness(gx + _RING_COS * (r - band), gy + _RING_SIN * (r - band)),
+                          self._whiteness(gx + _RING_COS * (r + band), gy + _RING_SIN * (r + band)))
+        scores = ((core - dark) > RING_CONTRAST).mean(axis=2)
+        ia, ir = np.unravel_index(int(np.argmax(scores)), scores.shape)
+        if scores[ia, ir] < OVERLAP_RING_SCORE:
+            return None
+        # O meio do platô (o anel tem uns pixels de largura).
+        best = scores[ia, ir]
+        sel = scores >= best - 0.03
+        return Vec2(float(gx[..., 0][sel].mean()), float(gy[..., 0][sel].mean())) if sel.sum() < 40 else \
+            Vec2(float(gx[ia, ir, 0]), float(gy[ia, ir, 0]))
+
+    def _cue_center_by_edge(self, rough: Vec2, ring: Vec2, r: float) -> Vec2 | None:
+        """Centro da branca pelo círculo da borda dela (onde o branco da bola encontra o contorno
+        escuro). Os pontos de borda que caem no traço do anel ficam de fora (pela posição de cada um,
+        não pelo centro aproximado, que pode estar uns pixels fora), e também o lado da ponta do taco,
+        que fica logo atrás da branca e é clara."""
+        u = (ring - rough).normalized()
+        angles = np.radians(np.arange(0.0, 360.0, 5.0))
+        ex, ey = np.cos(angles), np.sin(angles)
+        keep = (ex * -u.x + ey * -u.y) < math.cos(math.radians(35))
+        ex, ey = ex[keep], ey[keep]
+        ss = np.arange(0.4 * r, 1.6 * r, 0.25)
+        w = self._whiteness(rough.x + ex[:, None] * ss[None, :], rough.y + ey[:, None] * ss[None, :])
+        px, py = [], []
+        for k in range(len(w)):
+            row = w[k]
+            white = np.nonzero(row >= 170)[0]
+            if len(white) == 0:
+                continue
+            # Primeira queda do branco da bola para o escuro andando para fora: a borda da bola (mais
+            # longe, o miolo branco do anel pode aparecer de novo).
+            below = np.nonzero(row[white[0]:] < EDGE_LEVEL)[0]
+            if len(below) == 0:
+                continue
+            j = white[0] + below[0] - 1
+            f = (row[j] - EDGE_LEVEL) / (row[j] - row[j + 1])
+            s = ss[j] + f * (ss[j + 1] - ss[j])
+            x, y = rough.x + ex[k] * s, rough.y + ey[k] * s
+            if abs(math.hypot(x - ring.x, y - ring.y) - r) > RING_STROKE * r:
+                px.append(x)
+                py.append(y)
+        if len(px) < 8:
+            return None
+        center, radius = _fit_circle(np.array(px), np.array(py))
+        if center is None or abs(radius - r) > 0.25 * r or center.distance_to(rough) > 0.8 * r:
+            return None
+        return center
 
     def _line_leaves(self, c: Vec2, r: float) -> bool:
         """Teste barato antes da busca da linha: uma linha que sai da bola cruza pelo menos dois dos
@@ -261,7 +397,7 @@ class AimDetector:
             crossed += bool(self._white[ys[inb], xs[inb]].any())
         return crossed >= 2
 
-    def _cue_candidates(self) -> list[Vec2]:
+    def _cue_candidates(self, min_fill: float = MIN_CUE_FILL, limit: int = MAX_CUE_CANDIDATES) -> list[Vec2]:
         """Lugares onde um quadrado do tamanho do miolo da bola fica cheio de branco, do mais cheio para
         o menos (até ``MAX_CUE_CANDIDATES``)."""
         t = self._table
@@ -285,14 +421,14 @@ class AimDetector:
         right = np.clip(cxs + half - ix0 + 1, 0, w)[None, :]
         sums = (integral[bottom, right] - integral[top, right] - integral[bottom, left] + integral[top, left]).ravel()
         side = 2 * half + 1
-        full = np.nonzero(sums >= MIN_CUE_FILL * side * side)[0]
+        full = np.nonzero(sums >= min_fill * side * side)[0]
         peaks: list[Vec2] = []
         for k in full[np.argsort(-sums[full], kind="stable")]:
             j, i = divmod(int(k), len(cxs))
             p = Vec2(float(cxs[i]), float(cys[j]))
             if all(p.distance_to(q) >= 1.5 * r for q in peaks):
                 peaks.append(p)
-                if len(peaks) == MAX_CUE_CANDIDATES:
+                if len(peaks) == limit:
                     break
         centers = []
         for center in peaks:
@@ -619,11 +755,18 @@ class AimDetector:
             return cue
         return self._cue_center_on_line(line.origin, line.direction, r)
 
-    def _ring_center(self, d: Vec2, ghost: Vec2, r: float) -> Vec2:
+    def _ring_center(self, d: Vec2, ghost: Vec2, r: float, avoid: Vec2 | None = None) -> Vec2:
         """Centro do anel com fração de pixel: círculo ajustado ao ponto mais branco de cada raio (sem
-        o lado de onde vem a linha, que tem a direção ``d``). A direção da bola alvo sai daqui, então
-        meio pixel errado aqui vira ângulo errado lá. Se o ajuste não convencer, devolve ``ghost``."""
-        use = (_RING_COS * -d.x + _RING_SIN * -d.y) <= RING_SKIP_COS
+        o lado de onde vem a linha, que tem a direção ``d``, ou, com ``avoid``, sem os raios que passam
+        pela branca centrada ali). A direção da bola alvo sai daqui, então meio pixel errado aqui vira
+        ângulo errado lá. Se o ajuste não convencer, devolve ``ghost``."""
+        if avoid is None:
+            use = (_RING_COS * -d.x + _RING_SIN * -d.y) <= RING_SKIP_COS
+        else:
+            near = np.arange(0.6 * r, 1.5 * r, 1.0)
+            px_ = ghost.x + _RING_COS[:, None] * near[None, :]
+            py_ = ghost.y + _RING_SIN[:, None] * near[None, :]
+            use = (np.hypot(px_ - avoid.x, py_ - avoid.y) > r + 3).all(axis=1)
         cos, sin = _RING_COS[use], _RING_SIN[use]
         ss = np.arange(0.7 * r, 1.4 * r, 0.25)
         xs = ghost.x + cos[:, None] * ss[None, :]
@@ -698,6 +841,12 @@ class AimDetector:
         pixels = self._rgb[py[inb], px[inb]].astype(np.int32)
         far[inb] = np.abs(pixels - cloth).sum(axis=1) > BALL_COLOR_DISTANCE
         scores = far.sum(axis=1) / np.maximum(inside.sum(axis=1), 1)
+        # O centro de uma bola nunca sai do retângulo por onde ele anda; perto da tabela a borracha,
+        # bem diferente do pano, pareceria uma bola.
+        t = self._table
+        out = ((centers_x < t.min_x - 1.5) | (centers_x > t.max_x + 1.5)
+               | (centers_y < t.min_y - 1.5) | (centers_y > t.max_y + 1.5))
+        scores[out] = 0.0
         i_best = int(np.argmax(scores))
         best = scores[i_best]
         if best < MIN_BALL_SCORE:
@@ -722,8 +871,37 @@ class AimDetector:
                 vecs = np.linalg.eigh(q.T @ q)[1]
                 refined = Vec2(float(vecs[0, 1]), float(vecs[1, 1]))
                 direction = refined if refined.dot(direction) > 0 else -refined
+        else:
+            # Sem a linha (bola colada na tabela: ela entra direto na borracha), a direção sai do
+            # centro da bola pelos pixels dela.
+            direction = self._object_center_direction(ghost, direction, r, cloth)
         center = ghost + direction * (2 * r)
         return _Line(center, direction, line.end if line else center)
+
+    def _object_center_direction(self, ghost: Vec2, direction: Vec2, r: float, cloth: np.ndarray) -> Vec2:
+        """Direção do anel ao centro da bola alvo: centro de massa do que não é pano num disco do tamanho
+        da bola (dentro da mesa, sem o próprio anel), repetido até parar."""
+        t = self._table
+        center = ghost + direction * (2 * r)
+        for _ in range(4):
+            xs, ys = self._disc(center, r)
+            keep = (xs >= t.left) & (xs <= t.right) & (ys >= t.top) & (ys <= t.bottom)
+            keep &= np.hypot(xs - ghost.x, ys - ghost.y) > r + 0.25 * r
+            xs, ys = xs[keep], ys[keep]
+            pixels = self._rgb[ys, xs].astype(np.float32)
+            ball = np.abs(pixels - cloth).sum(axis=1) > BALL_COLOR_DISTANCE
+            # Sombra da bola no pano: o mesmo pano mais escuro (os três canais caem na mesma proporção).
+            k = pixels / np.maximum(cloth.astype(np.float32), 1.0)
+            ball &= ~((k.max(axis=1) - k.min(axis=1) < SHADOW_RATIO_SPREAD) & (k.mean(axis=1) < 0.97))
+            if ball.sum() < 10:
+                break
+            mean = Vec2(float(xs[ball].mean()), float(ys[ball].mean()))
+            new = (mean - ghost).normalized()
+            moved = (ghost + new * (2 * r)).distance_to(center)
+            direction, center = new, ghost + new * (2 * r)
+            if moved < 0.2:
+                break
+        return direction
 
     def _cloth_color(self, c: Vec2, r: float) -> np.ndarray:
         """Cor do pano em volta do anel: mediana de um anel de amostras."""
@@ -733,7 +911,8 @@ class AimDetector:
             ys.append(np.rint(c.y + _RING_SIN * radius))
         xs = np.concatenate(xs).astype(int)
         ys = np.concatenate(ys).astype(int)
-        inb = (xs >= 0) & (xs < self._w) & (ys >= 0) & (ys < self._h)
+        t = self._table  # só o pano: perto da tabela, a borracha puxaria a mediana
+        inb = (xs >= max(0, t.left)) & (xs < min(self._w, t.right)) & (ys >= max(0, t.top)) & (ys < min(self._h, t.bottom))
         if not inb.any():
             return np.zeros(3, dtype=np.int32)
         return np.median(self._rgb[ys[inb], xs[inb]], axis=0).astype(np.int32)

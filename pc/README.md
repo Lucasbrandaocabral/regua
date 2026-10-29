@@ -66,4 +66,9 @@ régua em partidas online contra outras pessoas pode violar os termos do jogo.
 - `regua_pc/capture.py`, `tracker.py`, `overlay.py`, `app.py`: janela do Windows, captura, camada
   transparente e janela de controle.
 - Testes: `python -m pytest -q tests` (mesas desenhadas pelos testes, sem precisar do jogo).
+- Simulador: `python simulador.py` sorteia mesas parecidas com as do 8 Ball Pool (tamanho de celular,
+  bolas lisas e listradas, brilho, sombra, taco e as linhas do jogo), roda a régua em cada uma e mostra
+  quantas ela acertou por tipo de tacada: longe, perto, colado (branca quase encostada no alvo, com o
+  anel por cima dela), tabela e bola_na_tabela. `--saida pasta` guarda as cenas que falharam e
+  `--exportar pasta` guarda todas (PNG + JSON com a resposta certa), para testar outra versão da visão.
 - O GitHub Actions roda os testes e gera o `Regua-PC.exe` com PyInstaller a cada push.

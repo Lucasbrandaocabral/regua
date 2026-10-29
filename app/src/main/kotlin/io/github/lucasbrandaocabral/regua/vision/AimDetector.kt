@@ -45,9 +45,10 @@ class AimDetector {
 
     /**
      * A linha de mira achada, o centro da branca nela, o anel onde ela termina (se houver) e o centro
-     * da branca achado só pelo branco dela.
+     * da branca achado só pelo branco dela. Com [final], branca e anel já vêm prontos (anel por cima
+     * da branca, sem traço de mira para refazer o ajuste).
      */
-    private class Aim(val guide: Line, val cue: Vec2, val ring: Vec2?, val rough: Vec2)
+    private class Aim(val guide: Line, val cue: Vec2, val ring: Vec2?, val rough: Vec2, val final: Boolean = false)
 
     /** Um raio testado na busca da linha: até onde ele segue um traço fino a partir da branca. */
     private class Ray(val run: Double, val degrees: Int, val origin: Vec2)
@@ -72,7 +73,9 @@ class AimDetector {
         var cue = aim.cue
         var guideLength = (aim.guide.end - cue) dot direction
         var ring = aim.ring
-        if (ring != null) {
+        if (aim.final && ring != null) {
+            guideLength = (ring - cue) dot direction
+        } else if (ring != null) {
             // Dentro do anel a linha se mistura com ele e com a linha de desvio da branca: refaz o
             // ajuste só com o trecho limpo, antes do anel.
             val ringDistance = (ring - cue) dot direction
@@ -94,9 +97,21 @@ class AimDetector {
             }
             guideLength = (ring - cue) dot direction
         }
-        // Anel colado na tabela é a branca batendo na tabela, não numa bola.
-        val ghost = ring?.takeIf { insideInner(table, it, 0.6 * r) }
-        val objectBall = if (ghost != null && findObjectBall) findObjectBall(frame, table, ghost, direction) else null
+        var ghost: Vec2? = null
+        var objectBall: Line? = null
+        val found = ring
+        if (found != null) {
+            val obj = if (findObjectBall) findObjectBall(frame, table, found, direction) else null
+            if (insideInner(table, found, 0.6 * r)) {
+                ghost = found
+                objectBall = obj
+            } else if (obj != null && obj.end.distanceTo(obj.origin) > 0.5 * r) {
+                // Anel colado na tabela, mas com uma bola encostada nele: o jogo desenha a linha dela.
+                ghost = found
+                objectBall = obj
+            }
+            // Senão, anel colado na tabela é a branca batendo na tabela, não numa bola.
+        }
         val balls = otherBalls(frame, table, cue).filter { b ->
             b.distanceTo(cue) > CUE_EXCLUSION * r &&
                 objectBall?.let { b.distanceTo(it.origin) > 1.2 * r } != false &&
@@ -207,7 +222,7 @@ class AimDetector {
      * menos (até [MAX_CUE_CANDIDATES], a pelo menos 1,5 raio um do outro). A branca é um deles, mas
      * as listradas com o lado branco para cima também entram, e às vezes com mais branco que ela.
      */
-    private fun cueCandidates(frame: Frame, table: Table): List<Vec2> {
+    private fun cueCandidates(frame: Frame, table: Table, minFill: Double = MIN_CUE_FILL, limit: Int = MAX_CUE_CANDIDATES): List<Vec2> {
         val r = table.ballRadius
         val half = max(2, (0.6 * r).roundToInt())
         val x0 = max(0, table.minX.toInt())
@@ -238,7 +253,7 @@ class AimDetector {
         // Caixas cheias o bastante, como (soma, posição) num Long para ordenar sem criar objetos;
         // no empate fica a que vem antes na varredura.
         val side = 2 * half + 1
-        val minSum = MIN_CUE_FILL * side * side
+        val minSum = minFill * side * side
         val columns = (x1 - x0) / 2 + 1
         var full = LongArray(64)
         var count = 0
@@ -263,7 +278,7 @@ class AimDetector {
             val p = Vec2((x0 + index % columns * 2).toDouble(), (y0 + index / columns * 2).toDouble())
             if (peaks.any { it.distanceTo(p) < 1.5 * r }) continue
             peaks += p
-            if (peaks.size == MAX_CUE_CANDIDATES) break
+            if (peaks.size == limit) break
         }
         return peaks.map { peak ->
             var center = peak
@@ -377,7 +392,235 @@ class AimDetector {
             val u = (close - rough).normalized()
             return Aim(Line(rough, u, close), cueCenterOnLine(frame, rough, u, r), close, rough)
         }
-        return fallback
+        // Branca quase encostada na bola alvo: o anel fica por cima dela, e a linha da bola alvo pode
+        // passar por uma linha de mira saindo de outra bola; por isso vem antes do [fallback].
+        return findOverlapAim(frame, table, near) ?: fallback
+    }
+
+    /**
+     * Anel por cima da própria branca (a menos de 2 raios dela): quase não sobra traço de mira e o
+     * miolo da branca fica coberto pelo anel. Procura o anel pelo traço dele (miolo claro entre
+     * contorno escuro, que aparece até em cima da bola) e confirma com a bola alvo encostada nele. O
+     * centro da branca sai da borda dela, e a direção, do centro da branca ao centro do anel.
+     */
+    private fun findOverlapAim(frame: Frame, table: Table, near: Vec2?): Aim? {
+        val r = table.ballRadius
+        var candidates = cueCandidates(frame, table, OVERLAP_CUE_FILL, OVERLAP_CANDIDATES)
+        if (near != null) candidates = candidates.sortedBy { it.distanceTo(near) > 3 * r }
+        for (rough in candidates) {
+            // Saem linhas dali (a da branca depois do choque e a da bola alvo): teste barato antes da
+            // busca do anel, que é cara.
+            if (!lineLeaves(frame, table, rough, r)) continue
+            var ring = findOverlapRing(frame, rough, r) ?: continue
+            val edge = cueCenterByEdge(frame, rough, ring, r)
+            // De novo, já do centro certo (os raios cruzam a borda de frente e o lado do taco fica
+            // exato). Com o anel quase todo em cima da borda (a meio raio ou menos) sobra pouca borda
+            // limpa: fica o centro pelo branco; a bola alvo e a linha dela continuam exatas.
+            val cue = if (edge != null) cueCenterByEdge(frame, edge, ring, r) ?: edge else rough
+            val d = ring.distanceTo(cue)
+            if (d < OVERLAP_MIN * r || d > OVERLAP_MAX * r) continue
+            ring = ringCenter(frame, Vec2.ZERO, ring, r, avoid = cue)
+            val u = (ring - cue).normalized()
+            // A bola alvo encostada no anel confirma (a linha dela pode sumir na borracha, se ela vai
+            // direto para a tabela).
+            if (findObjectBall(frame, table, ring, u) == null) continue
+            return Aim(Line(cue, u, ring), cue, ring, rough, final = true)
+        }
+        return null
+    }
+
+    /**
+     * O anel a até [OVERLAP_MAX] raios de [c] (o centro aproximado da branca, que pode estar uns
+     * pixels fora porque o anel cobre parte dela). Por cima da branca o miolo branco do anel some no
+     * branco da bola, mas o contorno escuro dos dois lados continua: o teste é miolo claro com escuro
+     * logo dentro e logo fora, que vale tanto no pano quanto em cima da bola.
+     */
+    private fun findOverlapRing(frame: Frame, c: Vec2, r: Double): Vec2? {
+        val band = RING_BAND * r
+        val maxRho = OVERLAP_MAX * r + 6
+        val grid = WhitenessGrid(frame, c, maxRho + r + band + 2)
+        val angles = (360.0 / CLOSE_RING_STEP_DEG).toInt()
+        val rhos = ceil(maxRho).toInt()
+        val scores = Array(angles) { DoubleArray(rhos) }
+        var best = 0.0
+        var bestA = 0
+        var bestK = 0
+        for (a in 0 until angles) {
+            val angle = Math.toRadians(a * CLOSE_RING_STEP_DEG)
+            val ux = cos(angle)
+            val uy = sin(angle)
+            for (k in 0 until rhos) {
+                val gx = c.x + ux * k
+                val gy = c.y + uy * k
+                var hits = 0
+                for (i in 0 until RING_SAMPLES) {
+                    val core = grid.at(gx + RING_COS[i] * r, gy + RING_SIN[i] * r)
+                    val dark = max(
+                        grid.at(gx + RING_COS[i] * (r - band), gy + RING_SIN[i] * (r - band)),
+                        grid.at(gx + RING_COS[i] * (r + band), gy + RING_SIN[i] * (r + band)),
+                    )
+                    if (core - dark > RING_CONTRAST) hits++
+                }
+                val score = hits.toDouble() / RING_SAMPLES
+                scores[a][k] = score
+                if (score > best) {
+                    best = score
+                    bestA = a
+                    bestK = k
+                }
+            }
+        }
+        if (best < OVERLAP_RING_SCORE) return null
+        // O meio do platô (o anel tem uns pixels de largura).
+        var sx = 0.0
+        var sy = 0.0
+        var n = 0
+        for (a in 0 until angles) {
+            val angle = Math.toRadians(a * CLOSE_RING_STEP_DEG)
+            for (k in 0 until rhos) {
+                if (scores[a][k] < best - 0.03) continue
+                sx += c.x + cos(angle) * k
+                sy += c.y + sin(angle) * k
+                n++
+            }
+        }
+        if (n < 40) return Vec2(sx / n, sy / n)
+        val angle = Math.toRadians(bestA * CLOSE_RING_STEP_DEG)
+        return Vec2(c.x + cos(angle) * bestK, c.y + sin(angle) * bestK)
+    }
+
+    /** Brancura (menor canal) de uma região quadrada do quadro, guardada para amostrar muitas vezes. */
+    private class WhitenessGrid(private val frame: Frame, center: Vec2, reach: Double) {
+        private val x0 = floor(center.x - reach).toInt()
+        private val y0 = floor(center.y - reach).toInt()
+        private val size = 2 * ceil(reach).toInt() + 3
+        private val values = DoubleArray(size * size) { i ->
+            val x = (x0 + i % size).coerceIn(0, frame.width - 1)
+            val y = (y0 + i / size).coerceIn(0, frame.height - 1)
+            val p = frame.pixel(x, y)
+            minOf(Frame.red(p), Frame.green(p), Frame.blue(p)).toDouble()
+        }
+
+        /** Interpolação bilinear; fora da região, a brancura do quadro direto. */
+        fun at(x: Double, y: Double): Double {
+            val fx0 = floor(x).toInt()
+            val fy0 = floor(y).toInt()
+            val gx = fx0 - x0
+            val gy = fy0 - y0
+            if (gx < 0 || gy < 0 || gx + 1 >= size || gy + 1 >= size) return whitenessOf(frame, x, y)
+            val fx = x - fx0
+            val fy = y - fy0
+            val i = gy * size + gx
+            return values[i] * (1 - fx) * (1 - fy) + values[i + 1] * fx * (1 - fy) +
+                values[i + size] * (1 - fx) * fy + values[i + size + 1] * fx * fy
+        }
+    }
+
+    /**
+     * Centro da branca pelo círculo da borda dela (onde o branco da bola encontra o contorno
+     * escuro). Os pontos de borda que caem no traço do anel ficam de fora (pela posição de cada um,
+     * não pelo centro aproximado, que pode estar uns pixels fora), e também o lado da ponta do taco,
+     * que fica logo atrás da branca e é clara.
+     */
+    private fun cueCenterByEdge(frame: Frame, rough: Vec2, ring: Vec2, r: Double): Vec2? {
+        val u = (ring - rough).normalized()
+        val stickCos = cos(Math.toRadians(35.0))
+        val ss = DoubleArray(ceil(1.2 * r / 0.25).toInt()) { 0.4 * r + 0.25 * it }
+        val px = ArrayList<Double>()
+        val py = ArrayList<Double>()
+        var angle = 0.0
+        while (angle < 360.0) {
+            val ex = cos(Math.toRadians(angle))
+            val ey = sin(Math.toRadians(angle))
+            angle += 5.0
+            if (ex * -u.x + ey * -u.y >= stickCos) continue
+            val w = DoubleArray(ss.size) { whiteness(frame, rough.x + ex * ss[it], rough.y + ey * ss[it]) }
+            // Primeira queda do branco da bola para o escuro andando para fora: a borda da bola (mais
+            // longe, o miolo branco do anel pode aparecer de novo).
+            val firstWhite = w.indexOfFirst { it >= 170 }
+            if (firstWhite < 0) continue
+            var below = -1
+            for (i in firstWhite until w.size) {
+                if (w[i] < EDGE_LEVEL) {
+                    below = i
+                    break
+                }
+            }
+            if (below < 0) continue
+            val j = below - 1
+            val f = (w[j] - EDGE_LEVEL) / (w[j] - w[j + 1])
+            val s = ss[j] + f * (ss[j + 1] - ss[j])
+            val x = rough.x + ex * s
+            val y = rough.y + ey * s
+            if (kotlin.math.abs(kotlin.math.hypot(x - ring.x, y - ring.y) - r) > RING_STROKE * r) {
+                px += x
+                py += y
+            }
+        }
+        if (px.size < 8) return null
+        val (center, radius) = fitCircle(px.toDoubleArray(), py.toDoubleArray()) ?: return null
+        if (kotlin.math.abs(radius - r) > 0.25 * r || center.distanceTo(rough) > 0.8 * r) return null
+        return center
+    }
+
+    /**
+     * Círculo por mínimos quadrados (Kåsa), tirando um a um o ponto mais longe dele enquanto algum
+     * passar de [outlier] px (alguns pontos ruins puxam tanto o primeiro ajuste que tirar todos os
+     * longe de uma vez levaria os bons junto); null se sobrarem menos de 8.
+     */
+    private fun fitCircle(px: DoubleArray, py: DoubleArray, outlier: Double = 0.8): Pair<Vec2, Double>? {
+        val keep = BooleanArray(px.size) { true }
+        while (keep.count { it } >= 8) {
+            val n = keep.count { it }
+            var mx = 0.0
+            var my = 0.0
+            for (i in px.indices) if (keep[i]) {
+                mx += px[i]
+                my += py[i]
+            }
+            mx /= n
+            my /= n
+            var suu = 0.0
+            var svv = 0.0
+            var suv = 0.0
+            var suuu = 0.0
+            var svvv = 0.0
+            var suvv = 0.0
+            var svuu = 0.0
+            for (i in px.indices) if (keep[i]) {
+                val a = px[i] - mx
+                val b = py[i] - my
+                suu += a * a
+                svv += b * b
+                suv += a * b
+                suuu += a * a * a
+                svvv += b * b * b
+                suvv += a * b * b
+                svuu += b * a * a
+            }
+            val det = suu * svv - suv * suv
+            if (kotlin.math.abs(det) < 1e-9) return null
+            val e1 = 0.5 * (suuu + suvv)
+            val e2 = 0.5 * (svvv + svuu)
+            val uc = (e1 * svv - e2 * suv) / det
+            val vc = (e2 * suu - e1 * suv) / det
+            val cx = mx + uc
+            val cy = my + vc
+            val fitR = kotlin.math.sqrt(uc * uc + vc * vc + (suu + svv) / n)
+            var worst = -1
+            var worstErr = -1.0
+            for (i in px.indices) {
+                if (!keep[i]) continue
+                val err = kotlin.math.abs(kotlin.math.hypot(px[i] - cx, py[i] - cy) - fitR)
+                if (err > worstErr) {
+                    worstErr = err
+                    worst = i
+                }
+            }
+            if (worstErr <= outlier) return Vec2(cx, cy) to fitR
+            keep[worst] = false
+        }
+        return null
     }
 
     /**
@@ -687,14 +930,25 @@ class AimDetector {
      * lado de onde vem a linha, que tem a direção [dir]). Com o anel quase encostado na branca, a
      * direção da mira sai daqui. Se o ajuste não convencer, devolve [ghost].
      */
-    private fun ringCenter(frame: Frame, dir: Vec2, ghost: Vec2, r: Double): Vec2 {
+    private fun ringCenter(frame: Frame, dir: Vec2, ghost: Vec2, r: Double, avoid: Vec2? = null): Vec2 {
         val ss = DoubleArray(ceil(0.7 * r / 0.25).toInt()) { 0.7 * r + 0.25 * it }
         val px = ArrayList<Double>()
         val py = ArrayList<Double>()
         for (i in 0 until RING_SAMPLES) {
             val ux = RING_COS[i]
             val uy = RING_SIN[i]
-            if (-(ux * dir.x + uy * dir.y) > RING_SKIP_COS) continue
+            if (avoid == null) {
+                if (-(ux * dir.x + uy * dir.y) > RING_SKIP_COS) continue
+            } else {
+                // Sem os raios que passam pela branca centrada em [avoid].
+                var crosses = false
+                var s = 0.6 * r
+                while (s < 1.5 * r) {
+                    if (kotlin.math.hypot(ghost.x + ux * s - avoid.x, ghost.y + uy * s - avoid.y) <= r + 3) crosses = true
+                    s += 1.0
+                }
+                if (crosses) continue
+            }
             val w = DoubleArray(ss.size) { whiteness(frame, ghost.x + ux * ss[it], ghost.y + uy * ss[it]) }
             val peak = ss[w.indices.maxBy { w[it] }]
             // Só em volta do pico: as linhas que cruzam o anel são brancas no raio todo.
@@ -767,17 +1021,7 @@ class AimDetector {
     }
 
     /** Brancura (o menor canal de cor) num ponto com fração de pixel, por interpolação bilinear. */
-    private fun whiteness(frame: Frame, x: Double, y: Double): Double {
-        val x0 = floor(x).toInt().coerceIn(0, frame.width - 2)
-        val y0 = floor(y).toInt().coerceIn(0, frame.height - 2)
-        val fx = (x - x0).coerceIn(0.0, 1.0)
-        val fy = (y - y0).coerceIn(0.0, 1.0)
-        fun at(dx: Int, dy: Int): Double {
-            val p = frame.pixel(x0 + dx, y0 + dy)
-            return minOf(Frame.red(p), Frame.green(p), Frame.blue(p)).toDouble()
-        }
-        return at(0, 0) * (1 - fx) * (1 - fy) + at(1, 0) * fx * (1 - fy) + at(0, 1) * (1 - fx) * fy + at(1, 1) * fx * fy
-    }
+    private fun whiteness(frame: Frame, x: Double, y: Double): Double = whitenessOf(frame, x, y)
 
     /** Fração branca de um disco: o anel é oco, a branca e as outras bolas no fim da linha são cheias. */
     private fun whiteFraction(frame: Frame, c: Vec2, radius: Double): Double {
@@ -814,11 +1058,15 @@ class AimDetector {
      */
     private fun findObjectBall(frame: Frame, table: Table, ghost: Vec2, aim: Vec2): Line? {
         val r = table.ballRadius
-        val cloth = clothColor(frame, ghost, r)
+        val cloth = clothColor(frame, table, ghost, r)
         val aimAngle = atan2(aim.y, aim.x)
         val scores = DoubleArray(OBJECT_CANDIDATES) { i ->
             val angle = aimAngle + Math.toRadians(OBJECT_STEP_DEG * (i - OBJECT_CANDIDATES / 2))
-            ballScore(frame, ghost + Vec2.ofAngle(angle) * (2 * r), 0.6 * r, cloth)
+            val c = ghost + Vec2.ofAngle(angle) * (2 * r)
+            // O centro de uma bola nunca sai do retângulo por onde ele anda; perto da tabela a borracha,
+            // bem diferente do pano, pareceria uma bola.
+            if (c.x < table.minX - 1.5 || c.x > table.maxX + 1.5 || c.y < table.minY - 1.5 || c.y > table.maxY + 1.5) 0.0
+            else ballScore(frame, c, 0.6 * r, cloth)
         }
         val iBest = scores.indices.maxBy { scores[it] }
         val best = scores[iBest]
@@ -840,9 +1088,56 @@ class AimDetector {
             val start = ghost + direction * (2 * r)
             val refined = lineThroughPoint(ghost, strokeCenters(frame, table, start, direction, 1.2 * r, ((line.end - start) dot direction) - 2), minSamples)
             if (refined != null) direction = if ((refined dot direction) > 0) refined else Vec2(-refined.x, -refined.y)
+        } else {
+            // Sem a linha (bola colada na tabela: ela entra direto na borracha), a direção sai do
+            // centro da bola pelos pixels dela.
+            direction = objectCenterDirection(frame, table, ghost, direction, r, cloth)
         }
         val center = ghost + direction * (2 * r)
         return Line(center, direction, line?.end ?: center)
+    }
+
+    /**
+     * Direção do anel ao centro da bola alvo: centro de massa do que não é pano num disco do tamanho
+     * da bola (dentro da mesa, sem o próprio anel e sem a sombra da bola), repetido até parar.
+     */
+    private fun objectCenterDirection(frame: Frame, table: Table, ghost: Vec2, start: Vec2, r: Double, cloth: Int): Vec2 {
+        var direction = start
+        var center = ghost + direction * (2 * r)
+        val cr = max(1, Frame.red(cloth)).toDouble()
+        val cg = max(1, Frame.green(cloth)).toDouble()
+        val cb = max(1, Frame.blue(cloth)).toDouble()
+        repeat(4) {
+            var sx = 0.0
+            var sy = 0.0
+            var n = 0
+            for (y in floor(center.y - r).toInt()..ceil(center.y + r).toInt()) {
+                for (x in floor(center.x - r).toInt()..ceil(center.x + r).toInt()) {
+                    val dx = x - center.x
+                    val dy = y - center.y
+                    if (dx * dx + dy * dy > r * r || x !in 0 until frame.width || y !in 0 until frame.height) continue
+                    if (x < table.left || x > table.right || y < table.top || y > table.bottom) continue
+                    if (kotlin.math.hypot(x - ghost.x, y - ghost.y) <= 1.25 * r) continue
+                    val p = frame.pixel(x, y)
+                    if (Frame.distance(p, cloth) <= BALL_COLOR_DISTANCE) continue
+                    // Sombra da bola no pano: o mesmo pano mais escuro (os três canais caem na mesma proporção).
+                    val kr = Frame.red(p) / cr
+                    val kg = Frame.green(p) / cg
+                    val kb = Frame.blue(p) / cb
+                    if (maxOf(kr, kg, kb) - minOf(kr, kg, kb) < SHADOW_RATIO_SPREAD && (kr + kg + kb) / 3 < 0.97) continue
+                    sx += x
+                    sy += y
+                    n++
+                }
+            }
+            if (n < 10) return direction
+            val next = (Vec2(sx / n, sy / n) - ghost).normalized()
+            val moved = (ghost + next * (2 * r)).distanceTo(center)
+            direction = next
+            center = ghost + next * (2 * r)
+            if (moved < 0.2) return direction
+        }
+        return direction
     }
 
     /**
@@ -892,7 +1187,7 @@ class AimDetector {
     }
 
     /** Cor do pano em volta do anel: mediana de um anel de amostras (a bola alvo ocupa só uma parte dele). */
-    private fun clothColor(frame: Frame, c: Vec2, r: Double): Int {
+    private fun clothColor(frame: Frame, table: Table, c: Vec2, r: Double): Int {
         val reds = ArrayList<Int>()
         val greens = ArrayList<Int>()
         val blues = ArrayList<Int>()
@@ -900,7 +1195,10 @@ class AimDetector {
             for (i in 0 until RING_SAMPLES) {
                 val x = (c.x + RING_COS[i] * radius).roundToInt()
                 val y = (c.y + RING_SIN[i] * radius).roundToInt()
-                if (x !in 0 until frame.width || y !in 0 until frame.height) continue
+                // Só o pano: perto da tabela, a borracha puxaria a mediana.
+                if (x < max(0.0, table.left) || x >= min(frame.width.toDouble(), table.right) ||
+                    y < max(0.0, table.top) || y >= min(frame.height.toDouble(), table.bottom)
+                ) continue
                 val p = frame.pixel(x, y)
                 reds += Frame.red(p)
                 greens += Frame.green(p)
@@ -943,6 +1241,32 @@ class AimDetector {
 
         /** Bolas brancas testadas (as listradas com o lado branco para cima também são). */
         const val MAX_CUE_CANDIDATES = 6
+
+        /** Com o anel por cima da branca sobra bem menos branco nela, e ela pode ficar atrás de listradas. */
+        const val OVERLAP_CUE_FILL = 0.3
+        const val OVERLAP_CANDIDATES = 10
+
+        /** Em raios: anel por cima da branca (branca quase encostada no alvo). */
+        const val OVERLAP_MIN = 0.1
+        const val OVERLAP_MAX = 1.95
+
+        /** Fração dos pontos do anel com o miolo claro entre o contorno escuro. */
+        const val OVERLAP_RING_SCORE = 0.6
+
+        /** Em raios: do miolo do anel até o meio do contorno escuro (traço de 0,09 + 0,11 raio). */
+        const val RING_BAND = 0.145
+
+        /** Brancura do miolo do anel menos a do contorno. */
+        const val RING_CONTRAST = 60.0
+
+        /** Em raios: pontos da borda da branca mais perto que isso do anel estão no traço dele. */
+        const val RING_STROKE = 0.3
+
+        /** Sombra: cada canal do pixel dividido pelo do pano dá quase o mesmo valor. */
+        const val SHADOW_RATIO_SPREAD = 0.15
+
+        /** Brancura no meio do caminho entre a branca (~200+) e o contorno escuro dela. */
+        const val EDGE_LEVEL = 130.0
 
         /** Contraste mínimo da borda de uma tabela (na mesa do jogo passa de 90; no menu, perto de 0). */
         const val TABLE_EDGE_CONTRAST = 40.0
@@ -993,4 +1317,17 @@ class AimDetector {
         const val MIN_BALL_SCORE = 0.6
         const val BALL_COLOR_DISTANCE = 60
     }
+}
+
+/** Brancura (o menor canal de cor) num ponto com fração de pixel, por interpolação bilinear. */
+private fun whitenessOf(frame: Frame, x: Double, y: Double): Double {
+    val x0 = floor(x).toInt().coerceIn(0, frame.width - 2)
+    val y0 = floor(y).toInt().coerceIn(0, frame.height - 2)
+    val fx = (x - x0).coerceIn(0.0, 1.0)
+    val fy = (y - y0).coerceIn(0.0, 1.0)
+    fun at(dx: Int, dy: Int): Double {
+        val p = frame.pixel(x0 + dx, y0 + dy)
+        return minOf(Frame.red(p), Frame.green(p), Frame.blue(p)).toDouble()
+    }
+    return at(0, 0) * (1 - fx) * (1 - fy) + at(1, 0) * fx * (1 - fy) + at(0, 1) * (1 - fx) * fy + at(1, 1) * fx * fy
 }
