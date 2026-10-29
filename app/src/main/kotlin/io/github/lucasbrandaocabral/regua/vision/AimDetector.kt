@@ -298,15 +298,18 @@ class AimDetector {
         var candidates = cueCandidates(frame, table).filter { lineLeaves(frame, table, it, r) }
         if (near != null) candidates = candidates.sortedBy { it.distanceTo(near) > 3 * r }
         var fallback: Aim? = null
+        // Primeiro perto da direção do quadro anterior; se isso não der numa linha que acaba num anel
+        // (a dica pode cair noutro traço branco, como o de uma régua velha), varre todas as direções.
+        val searches = if (hintDegrees != null) listOf(hintDegrees, null) else listOf(null)
         for (rough in candidates) {
-            val guide = hintDegrees?.let { findGuide(frame, table, rough, aroundDegrees = it) }
-                ?: findGuide(frame, table, rough, aroundDegrees = null)
-                ?: continue
-            val cue = cueCenterOnLine(frame, guide.origin, guide.direction, r)
-            val length = (guide.end - cue) dot guide.direction
-            val ring = findGhost(frame, cue, guide.direction, length, r)
-            if (ring != null && whiteFraction(frame, ring, 0.5 * r) < HOLLOW_RING) return Aim(guide, cue, ring, rough)
-            if (fallback == null && length - 1.5 * r >= minGuideSamples(r)) fallback = Aim(guide, cue, ring, rough)
+            for (around in searches) {
+                val guide = findGuide(frame, table, rough, around) ?: continue
+                val cue = cueCenterOnLine(frame, guide.origin, guide.direction, r)
+                val length = (guide.end - cue) dot guide.direction
+                val ring = findGhost(frame, cue, guide.direction, length, r)
+                if (ring != null && whiteFraction(frame, ring, 0.5 * r) < HOLLOW_RING) return Aim(guide, cue, ring, rough)
+                if (fallback == null && length - 1.5 * r >= minGuideSamples(r)) fallback = Aim(guide, cue, ring, rough)
+            }
         }
         for (rough in candidates) {
             val close = findCloseRing(frame, rough, r) ?: continue

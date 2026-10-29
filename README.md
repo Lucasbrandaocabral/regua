@@ -42,6 +42,8 @@ baixe <https://github.com/Lucasbrandaocabral/Regua/releases/download/apk/Regua-P
 
 O botão **AUTO** do painel mostra o estado: verde = seguindo a linha; amarelo = a linha do jogo não está
 aparecendo (vez do adversário, bolas andando); cinza = desligado (toque para ligar de novo).
+Se a linha do jogo está na tela e o AUTO continua amarelo, **segure o AUTO**: a régua guarda em
+Imagens/Regua o quadro exato que estava analisando, para dar para ver o que ela não reconheceu.
 
 A bola que o círculo do jogo toca é sempre a bola alvo no automático (o botão de alvo só vale no manual).
 A branca é a bola branca de onde sai a linha do jogo, então listradas com o lado branco para cima não
@@ -67,7 +69,7 @@ Botões do painel, de cima para baixo:
 | --- | --- |
 | Setas de 4 pontas | Arraste para mudar o painel de lugar; toque para recolher/abrir |
 | MIRAR / JOGAR | Alterna entre ajustar a régua e jogar |
-| AUTO | Liga/desliga a mira automática (pede para gravar a tela) |
+| AUTO | Liga/desliga a mira automática (pede para gravar a tela); segure para guardar o quadro analisado |
 | Setas redondas | Giram a linha 0,1° por toque (segure para girar sem parar) |
 | Número "tab." | Quantas tabelas a linha mostra (0 a 5) |
 | Alvo | Liga/desliga a bola alvo |

@@ -34,6 +34,9 @@ class ControlPanel(context: Context, private val actions: Actions) : LinearLayou
     interface Actions {
         fun toggleAim()
         fun toggleAuto()
+
+        /** Guarda o quadro que a mira automática está analisando (segurar o AUTO). */
+        fun saveFrame()
         fun rotate(degrees: Float)
         fun cycleCushions()
         fun toggleTarget()
@@ -76,6 +79,10 @@ class ControlPanel(context: Context, private val actions: Actions) : LinearLayou
 
         modeButton.setOnClickListener { actions.toggleAim() }
         autoButton.setOnClickListener { actions.toggleAuto() }
+        autoButton.setOnLongClickListener {
+            actions.saveFrame()
+            true
+        }
         ccwButton.repeatWhileHeld { actions.rotate(-FINE_STEP_DEGREES) }
         cwButton.repeatWhileHeld { actions.rotate(FINE_STEP_DEGREES) }
         cushionButton.setOnClickListener { actions.cycleCushions() }
