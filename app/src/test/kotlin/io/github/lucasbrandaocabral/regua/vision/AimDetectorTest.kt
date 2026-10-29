@@ -85,6 +85,32 @@ class AimDetectorTest {
     }
 
     @Test
+    fun findsRingAlmostTouchingTheCueBall() {
+        // Anel quase encostado na branca: o traço da mira entre as duas tem menos de um raio, e um raio
+        // que cruza o anel e a linha da tangente vai mais longe que ele.
+        for ((distance, degrees, cut) in listOf(
+            Triple(2.4, 222.0, -40.0), Triple(2.5, 30.0, 40.0), Triple(2.5, 177.0, 60.0),
+            Triple(2.8, 131.0, -15.0), Triple(3.2, 0.0, 60.0), Triple(3.2, 300.0, -70.0),
+        )) {
+            val scene = SyntheticTable()
+            val cue = Vec2(603.3, 281.7)
+            val dir = Vec2.ofAngle(Math.toRadians(degrees))
+            val ghost = cue + dir * (distance * scene.r)
+            val target = ghost + Vec2.ofAngle(Math.toRadians(degrees + cut)) * (2 * scene.r)
+            scene.ball(target, 230, 140, 30)
+            scene.aimAt(cue, target, dir)
+
+            val label = "$distance raios, $degrees°, corte $cut°"
+            val result = assertNotNullAnd(detector.detect(scene.frame(), scene.table), "sem resultado: $label")
+            val found = assertNotNullAnd(result.ghost, "sem anel: $label")
+            assertTrue("anel longe: $label", found.distanceTo(ghost) < 1.0)
+            assertTrue("ângulo: $label ${angleBetween(result.direction, dir)}", angleBetween(result.direction, dir) < 1.0)
+            val objectBall = assertNotNullAnd(result.objectBall, "sem alvo: $label")
+            assertTrue("direção do alvo: $label", angleBetween(objectBall - found, target - ghost) < 0.3)
+        }
+    }
+
+    @Test
     fun whiteBlobOnCueBallDoesNotBreakTheLine() {
         // Como a mão do "bola na mão": o centro achado da branca sai alguns pixels da linha.
         val scene = SyntheticTable()

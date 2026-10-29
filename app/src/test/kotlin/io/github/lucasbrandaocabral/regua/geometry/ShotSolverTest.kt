@@ -162,19 +162,36 @@ class ShotSolverTest {
 
     @Test
     fun firstBallOnTheWayBecomesTheTarget() {
-        // Outra bola no caminho antes do alvo marcado: é nela que a branca bate.
+        // Sem anel do jogo (sem alvo), a primeira bola no caminho é onde a branca bate.
         val shot = ShotSolver.solve(
-            table, cue = Vec2(50.0, 100.0), aim = Vec2(1.0, 0.0), target = Vec2(300.0, 100.0), cushions = 2,
-            obstacles = listOf(Vec2(150.0, 100.0)),
+            table, cue = Vec2(50.0, 100.0), aim = Vec2(1.0, 0.0), target = null, cushions = 2,
+            obstacles = listOf(Vec2(150.0, 100.0), Vec2(300.0, 100.0)),
         )
         assertEquals(Vec2(150.0, 100.0), shot.cue.hitBall)
         assertVec(Vec2(130.0, 100.0), shot.ghost!!)
-        // E a bola atingida segue reto até encostar no alvo marcado: combinação.
+        // E a bola atingida segue reto até encostar na outra: combinação.
         assertEquals(PathEnd.BALL, shot.objectBall!!.end)
         assertVec(Vec2(280.0, 100.0), shot.objectBall!!.points.last())
         val combo = shot.combo!!
         assertVec(Vec2(300.0, 100.0), combo.points.first())
         assertVec(Vec2(390.0, 100.0), combo.points.last())
+    }
+
+    @Test
+    fun targetFromTheGameWinsOverGrazingObstacle() {
+        // Como no print: a linha da branca passa a 1,9 raio de uma bola antes do anel. Pelas posições
+        // achadas ela encostaria, mas o anel do jogo mostra que passa e acerta o alvo.
+        val obstacle = Vec2(150.0, 119.0)
+        val shot = ShotSolver.solve(
+            table, cue = Vec2(50.0, 100.0), aim = Vec2(1.0, 0.0), target = Vec2(300.0, 105.0), cushions = 2,
+            obstacles = listOf(obstacle),
+        )
+        assertEquals(Vec2(300.0, 105.0), shot.cue.hitBall)
+        assertTrue(shot.ghost!!.x > 280.0)
+        assertNotNull(shot.objectBall)
+        // Sem alvo, a mesma bola para a branca.
+        val blind = ShotSolver.solve(table, Vec2(50.0, 100.0), Vec2(1.0, 0.0), null, 2, obstacles = listOf(obstacle))
+        assertEquals(obstacle, blind.cue.hitBall)
     }
 
     @Test

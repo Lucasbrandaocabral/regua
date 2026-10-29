@@ -42,6 +42,12 @@ class AimDetector {
     /** Reta ajustada num traço: passa por [origin] na direção [direction] e o traço acaba em [end]. */
     private class Line(val origin: Vec2, val direction: Vec2, val end: Vec2)
 
+    /** A linha de mira achada, o centro da branca nela e o anel onde ela termina (se houver). */
+    private class Aim(val guide: Line, val cue: Vec2, val ring: Vec2?)
+
+    /** Um raio testado na busca da linha: até onde ele segue um traço fino a partir da branca. */
+    private class Ray(val run: Double, val degrees: Int, val origin: Vec2)
+
     private var integral = IntArray(0)
     private val ballFinder = BallFinder()
     private var cachedBalls = emptyList<Vec2>()
@@ -57,22 +63,28 @@ class AimDetector {
         val r = table.ballRadius
         if (r < 3.0) return null
         val roughCue = previous?.let { findCueBall(frame, table, near = it.cue) } ?: findCueBall(frame, table, near = null) ?: return null
-        val guide = previous?.let { findGuide(frame, table, roughCue, aroundDegrees = Math.toDegrees(atan2(it.direction.y, it.direction.x))) }
-            ?: findGuide(frame, table, roughCue, aroundDegrees = null)
-            ?: return null
-        var direction = guide.direction
-        var cue = cueCenterOnLine(frame, guide.origin, direction, r)
-        var guideLength = (guide.end - cue) dot direction
-        var ring = findGhost(frame, cue, direction, guideLength, r)
+        val hint = previous?.let { Math.toDegrees(atan2(it.direction.y, it.direction.x)) }
+        val aim = findAim(frame, table, roughCue, hint) ?: return null
+        var direction = aim.guide.direction
+        var cue = aim.cue
+        var guideLength = (aim.guide.end - cue) dot direction
+        var ring = aim.ring
         if (ring != null) {
             // Dentro do anel a linha se mistura com ele e com a linha de desvio da branca: refaz o
             // ajuste só com o trecho limpo, antes do anel.
             val ringDistance = (ring - cue) dot direction
-            val clean = collectAndFit(frame, table, cue, direction, 1.5 * r, minGuideSamples(r), stopAt = ringDistance - 1.5 * r)
+            val clean = collectAndFit(frame, table, cue, direction, 1.5 * r, minGuideSamples(r).toDouble(), stopAt = ringDistance - 1.5 * r)
             if (clean != null) {
                 direction = clean.direction
                 cue = cueCenterOnLine(frame, clean.origin, direction, r)
                 ring = findGhost(frame, cue, direction, ringDistance, r) ?: ring
+            } else {
+                // Anel quase encostado na branca: o traço é curto demais para dar a direção, que passa
+                // a ser a do centro da branca ao centro do anel. A linha achada pode ser um raio torto
+                // que também chega no anel, então o centro da branca sai do branco dela, não da linha.
+                ring = ringCenter(frame, direction, ring, r)
+                cue = cueOnShortGuide(frame, table, roughCue, ring, r)
+                direction = (ring - cue).normalized()
             }
             guideLength = (ring - cue) dot direction
         }
@@ -230,44 +242,78 @@ class AimDetector {
     }
 
     /**
-     * Procura a linha de mira saindo da branca: o raio (só perto de [aroundDegrees], se informado)
-     * que segue um traço branco fino por mais tempo sem interrupção. Testa também raios paralelos
-     * deslocados para os lados, porque o centro achado da branca pode estar uns pixels fora da linha
-     * (a mão do "bola na mão" cobre parte dela). Depois ajusta a reta no trecho achado e, numa segunda
-     * passada estreita, anda até onde a linha do jogo aparece.
+     * A linha de mira saindo da branca e o anel onde ela termina. Um traço curto só vale se terminar
+     * num anel oco. Se a linha achada não acaba num anel, procura um anel quase encostado na branca:
+     * com ele tão perto, o traço até ele é curto demais para a busca pela linha.
+     */
+    private fun findAim(frame: Frame, table: Table, roughCue: Vec2, hintDegrees: Double?): Aim? {
+        val r = table.ballRadius
+        val guide = hintDegrees?.let { findGuide(frame, table, roughCue, aroundDegrees = it) }
+            ?: findGuide(frame, table, roughCue, aroundDegrees = null)
+        var fallback: Aim? = null
+        if (guide != null) {
+            val cue = cueCenterOnLine(frame, guide.origin, guide.direction, r)
+            val length = (guide.end - cue) dot guide.direction
+            val ring = findGhost(frame, cue, guide.direction, length, r)
+            if (ring != null && whiteFraction(frame, ring, 0.5 * r) < HOLLOW_RING) return Aim(guide, cue, ring)
+            if (length - 1.5 * r >= minGuideSamples(r)) fallback = Aim(guide, cue, ring)
+        }
+        val close = findCloseRing(frame, roughCue, r) ?: return fallback
+        val u = (close - roughCue).normalized()
+        return Aim(Line(roughCue, u, close), cueCenterOnLine(frame, roughCue, u, r), close)
+    }
+
+    /**
+     * Procura a linha de mira saindo da branca: os raios (só perto de [aroundDegrees], se informado)
+     * que seguem um traço branco fino por mais tempo sem interrupção, do mais comprido para o menos.
+     * Testa também raios paralelos deslocados para os lados, porque o centro achado da branca pode
+     * estar uns pixels fora da linha (a mão do "bola na mão" cobre parte dela). Em cada raio ajusta a
+     * reta no trecho achado e, numa segunda passada estreita, anda até onde a linha do jogo aparece;
+     * vale o primeiro que dá uma reta passando pela branca. Com o anel quase encostado na branca o
+     * traço é curto, e um raio torto que cruza o anel e a linha da tangente pode ir mais longe que ele.
      */
     private fun findGuide(frame: Frame, table: Table, cue: Vec2, aroundDegrees: Double?): Line? {
         val r = table.ballRadius
         val start = 1.5 * r
-        val minSamples = minGuideSamples(r)
         val degrees = if (aroundDegrees == null) 0 until 360 else {
             val center = aroundDegrees.roundToInt()
             center - HINT_DEGREES..center + HINT_DEGREES
         }
         val offsets = doubleArrayOf(0.0, -0.5 * r, 0.5 * r, -r, r)
-        var bestRun = 0.0
-        var bestOrigin = cue
-        var bestAngle = 0.0
+        val rays = ArrayList<Ray>()
         for (deg in degrees) {
-            val angle = Math.toRadians(deg.toDouble())
-            val u = Vec2.ofAngle(angle)
+            val u = Vec2.ofAngle(Math.toRadians(deg.toDouble()))
             val n = Vec2(-u.y, u.x)
             for (offset in offsets) {
                 val from = cue + n * offset
-                val run = runLength(frame, table, from, u, start)
-                if (run > bestRun) {
-                    bestRun = run
-                    bestOrigin = from
-                    bestAngle = angle
-                }
+                rays += Ray(runLength(frame, table, from, u, start), deg, from)
             }
         }
-        if (bestRun < minSamples) return null
-        // O fim do trecho pode já entrar no anel: deixa a última parte de fora do primeiro ajuste.
-        val stopAt = start + max(bestRun - r, 0.6 * bestRun)
-        val wide = collectAndFit(frame, table, bestOrigin, Vec2.ofAngle(bestAngle), start, minSamples, stopAt, tolerance = 0.6 * r)
-            ?: return null
-        return collectAndFit(frame, table, wide.origin, wide.direction, start, minSamples) ?: wide
+        rays.sortByDescending { it.run }
+        val minRun = max(6.0, SHORT_GUIDE * r)
+        val tried = ArrayList<Int>()
+        for (ray in rays) {
+            if (ray.run < minRun || tried.size == GUIDE_TRIES) break
+            if (tried.any { kotlin.math.abs(((ray.degrees - it) % 360 + 540) % 360 - 180) <= GUIDE_TRY_SPREAD }) continue
+            tried += ray.degrees
+            // Traço curto: o cruzamento com o anel nunca é estreito e não entra na conta.
+            val minSamples = min(minGuideSamples(r).toDouble(), max(4.0, 0.3 * ray.run))
+            val u = Vec2.ofAngle(Math.toRadians(ray.degrees.toDouble()))
+            // O fim do trecho pode já entrar no anel: deixa a última parte de fora do primeiro ajuste.
+            val stopAt = start + max(ray.run - r, 0.6 * ray.run)
+            val wide = collectAndFit(frame, table, ray.origin, u, start, minSamples, stopAt, tolerance = 0.6 * r) ?: continue
+            val line = collectAndFit(frame, table, wide.origin, wide.direction, start, minSamples) ?: wide
+            // A linha do jogo sai do centro da branca (que a mão do "bola na mão" pode tirar até um
+            // raio do lugar), e a reta ajustada tem de seguir o traço desde a borda dela (um ajuste
+            // que escorregou para a linha da tangente não segue).
+            val off = cue - line.origin
+            if (kotlin.math.abs(off.x * line.direction.y - off.y * line.direction.x) <= 1.2 * r &&
+                runLength(frame, table, line.origin, line.direction, start) >= minRun
+            ) {
+                return line
+            }
+        }
+        return null
     }
 
     /** Até que distância (a partir de [start]) o raio segue um traço branco fino sem interrupção. */
@@ -301,9 +347,9 @@ class AimDetector {
         val r = table.ballRadius
         // Tolera buracos maiores: uma linha da própria régua pode cruzar a do jogo.
         val gap = max(10.0, r)
-        val wide = collectAndFit(frame, table, origin, Vec2.ofAngle(approxAngle), start, minSamples, tolerance = 1.2 * r, gap = gap)
+        val wide = collectAndFit(frame, table, origin, Vec2.ofAngle(approxAngle), start, minSamples.toDouble(), tolerance = 1.2 * r, gap = gap)
             ?: return null
-        return collectAndFit(frame, table, wide.origin, wide.direction, start, minSamples, gap = gap) ?: wide
+        return collectAndFit(frame, table, wide.origin, wide.direction, start, minSamples.toDouble(), gap = gap) ?: wide
     }
 
     /**
@@ -311,7 +357,7 @@ class AimDetector {
      * corte do traço (só cortes estreitos, para não misturar o anel ou uma bola) até o traço acabar, e
      * ajusta uma reta por mínimos quadrados. Medir em pixels inteiros evita o erro de arredondamento
      * que entortaria retas quase horizontais ou verticais. O último trecho fica de fora do ajuste:
-     * é onde o traço encontra o anel e a linha que sai dele.
+     * é onde o traço encontra o anel e a linha que sai dele. [minLength] é o mínimo de traço, em pixels.
      */
     private fun collectAndFit(
         frame: Frame,
@@ -319,7 +365,7 @@ class AimDetector {
         origin: Vec2,
         u: Vec2,
         start: Double,
-        minSamples: Int,
+        minLength: Double,
         stopAt: Double = Double.POSITIVE_INFINITY,
         tolerance: Double = max(2.0, 0.15 * table.ballRadius),
         gap: Double = max(8.0, 0.45 * table.ballRadius),
@@ -327,6 +373,8 @@ class AimDetector {
         val r = table.ballRadius
         val horizontal = kotlin.math.abs(u.x) >= kotlin.math.abs(u.y)
         val major = if (horizontal) u.x else u.y
+        // Um corte por pixel do eixo principal: na diagonal são só ~0,7 cortes por pixel de traço.
+        val minSamples = max(3, ceil(minLength * kotlin.math.abs(major)).toInt())
         val slope = if (horizontal) u.y / u.x else u.x / u.y
         val originMajor = if (horizontal) origin.x else origin.y
         val originMinor = if (horizontal) origin.y else origin.x
@@ -475,6 +523,174 @@ class AimDetector {
     }
 
     /**
+     * Anel quase encostado na branca, quando o traço até ele é curto demais para a busca pela linha:
+     * o círculo oco do tamanho da bola mais branco a até [CLOSE_RING] raios do centro [c], com a
+     * linha da mira chegando no centro dele.
+     */
+    private fun findCloseRing(frame: Frame, c: Vec2, r: Double): Vec2? {
+        var best = 0.0
+        var bestRing = c
+        var angle = 0.0
+        while (angle < 360.0) {
+            val u = Vec2.ofAngle(Math.toRadians(angle))
+            // Sem o lado virado para a branca, por onde entra a linha.
+            val back = Vec2(-u.x, -u.y)
+            var rho = 2.2 * r
+            while (rho < CLOSE_RING * r) {
+                val g = c + u * rho
+                val score = ringScore(frame, g, r, back)
+                if (score > best) {
+                    best = score
+                    bestRing = g
+                }
+                rho += 1.0
+            }
+            angle += CLOSE_RING_STEP_DEG
+        }
+        if (best < MIN_RING_SCORE || whiteFraction(frame, bestRing, 0.5 * r) >= HOLLOW_RING) return null
+        val ring = ringCenter(frame, (bestRing - c).normalized(), bestRing, r)
+        // Dentro do anel, a linha da mira vem da branca até o centro.
+        val u = (c - ring).normalized()
+        val window = max(1, (0.15 * r).roundToInt())
+        val maxCore = max(3, (0.3 * r).roundToInt())
+        var on = 0
+        var total = 0
+        var s = 0.25 * r
+        while (s < 0.75 * r) {
+            total++
+            if (thinWhiteAt(frame, ring.x + u.x * s, ring.y + u.y * s, -u.y, u.x, window, maxCore)) on++
+            s += 1.0
+        }
+        return ring.takeIf { on >= 0.7 * total }
+    }
+
+    /**
+     * Centro do anel com fração de pixel: círculo ajustado ao ponto mais branco de cada raio (sem o
+     * lado de onde vem a linha, que tem a direção [dir]). Com o anel quase encostado na branca, a
+     * direção da mira sai daqui. Se o ajuste não convencer, devolve [ghost].
+     */
+    private fun ringCenter(frame: Frame, dir: Vec2, ghost: Vec2, r: Double): Vec2 {
+        val ss = DoubleArray(ceil(0.7 * r / 0.25).toInt()) { 0.7 * r + 0.25 * it }
+        val px = ArrayList<Double>()
+        val py = ArrayList<Double>()
+        for (i in 0 until RING_SAMPLES) {
+            val ux = RING_COS[i]
+            val uy = RING_SIN[i]
+            if (-(ux * dir.x + uy * dir.y) > RING_SKIP_COS) continue
+            val w = DoubleArray(ss.size) { whiteness(frame, ghost.x + ux * ss[it], ghost.y + uy * ss[it]) }
+            val peak = ss[w.indices.maxBy { w[it] }]
+            // Só em volta do pico: as linhas que cruzam o anel são brancas no raio todo.
+            var sum = 0.0
+            var total = 0.0
+            for (k in ss.indices) {
+                if (kotlin.math.abs(ss[k] - peak) > 1.5) continue
+                val weight = max(0.0, w[k] - WHITE_BASE)
+                sum += weight * ss[k]
+                total += weight
+            }
+            if (total <= 0.0) continue
+            px += ghost.x + ux * sum / total
+            py += ghost.y + uy * sum / total
+        }
+        val keep = BooleanArray(px.size) { true }
+        var cx = 0.0
+        var cy = 0.0
+        var fitR = 0.0
+        for (round in 0 until 3) {
+            val n = keep.count { it }
+            if (n < RING_SAMPLES / 3) return ghost
+            // Círculo por mínimos quadrados (Kåsa), com as coordenadas centradas na média.
+            var mx = 0.0
+            var my = 0.0
+            for (i in px.indices) if (keep[i]) {
+                mx += px[i]
+                my += py[i]
+            }
+            mx /= n
+            my /= n
+            var suu = 0.0
+            var svv = 0.0
+            var suv = 0.0
+            var suuu = 0.0
+            var svvv = 0.0
+            var suvv = 0.0
+            var svuu = 0.0
+            for (i in px.indices) if (keep[i]) {
+                val a = px[i] - mx
+                val b = py[i] - my
+                suu += a * a
+                svv += b * b
+                suv += a * b
+                suuu += a * a * a
+                svvv += b * b * b
+                suvv += a * b * b
+                svuu += b * a * a
+            }
+            val det = suu * svv - suv * suv
+            if (kotlin.math.abs(det) < 1e-9) return ghost
+            val e1 = 0.5 * (suuu + suvv)
+            val e2 = 0.5 * (svvv + svuu)
+            val uc = (e1 * svv - e2 * suv) / det
+            val vc = (e2 * suu - e1 * suv) / det
+            cx = mx + uc
+            cy = my + vc
+            fitR = kotlin.math.sqrt(uc * uc + vc * vc + (suu + svv) / n)
+            var dropped = false
+            for (i in px.indices) {
+                if (keep[i] && kotlin.math.abs(kotlin.math.hypot(px[i] - cx, py[i] - cy) - fitR) > RING_FIT_PX) {
+                    keep[i] = false
+                    dropped = true
+                }
+            }
+            if (!dropped) break
+        }
+        val center = Vec2(cx, cy)
+        return if (kotlin.math.abs(fitR - r) > 0.2 * r || center.distanceTo(ghost) > 0.5 * r) ghost else center
+    }
+
+    /** Brancura (o menor canal de cor) num ponto com fração de pixel, por interpolação bilinear. */
+    private fun whiteness(frame: Frame, x: Double, y: Double): Double {
+        val x0 = floor(x).toInt().coerceIn(0, frame.width - 2)
+        val y0 = floor(y).toInt().coerceIn(0, frame.height - 2)
+        val fx = (x - x0).coerceIn(0.0, 1.0)
+        val fy = (y - y0).coerceIn(0.0, 1.0)
+        fun at(dx: Int, dy: Int): Double {
+            val p = frame.pixel(x0 + dx, y0 + dy)
+            return minOf(Frame.red(p), Frame.green(p), Frame.blue(p)).toDouble()
+        }
+        return at(0, 0) * (1 - fx) * (1 - fy) + at(1, 0) * fx * (1 - fy) + at(0, 1) * (1 - fx) * fy + at(1, 1) * fx * fy
+    }
+
+    /** Fração branca de um disco: o anel é oco, a branca e as outras bolas no fim da linha são cheias. */
+    private fun whiteFraction(frame: Frame, c: Vec2, radius: Double): Double {
+        var white = 0
+        var total = 0
+        val r2 = radius * radius
+        for (y in floor(c.y - radius).toInt()..ceil(c.y + radius).toInt()) {
+            for (x in floor(c.x - radius).toInt()..ceil(c.x + radius).toInt()) {
+                val dx = x - c.x
+                val dy = y - c.y
+                if (dx * dx + dy * dy > r2 || x !in 0 until frame.width || y !in 0 until frame.height) continue
+                total++
+                if (frame.isWhite(x, y)) white++
+            }
+        }
+        return if (total == 0) 0.0 else white.toDouble() / total
+    }
+
+    /**
+     * Centro da branca na reta do traço curto entre ela e o anel. O centro achado pelo branco sai um
+     * pouco do lugar (a linha e o contorno dela cobrem parte da bola) e, com o anel tão perto, esse
+     * desvio de lado vira graus na direção da mira.
+     */
+    private fun cueOnShortGuide(frame: Frame, table: Table, cue: Vec2, ring: Vec2, r: Double): Vec2 {
+        val u = (ring - cue).normalized()
+        val line = collectAndFit(frame, table, cue, u, 0.5 * r, 4.0, stopAt = ring.distanceTo(cue) - 0.25 * r, tolerance = 0.3 * r)
+            ?: return cue
+        return cueCenterOnLine(frame, line.origin, line.direction, r)
+    }
+
+    /**
      * A bola alvo encosta no anel, na frente da mira. Acha o lado onde há uma bola (pixels bem
      * diferentes do pano) e, se o jogo desenhou a linha que sai dela, usa essa linha como direção exata.
      */
@@ -561,6 +777,28 @@ class AimDetector {
 
         /** Quanto a linha pode ter girado desde o quadro anterior. */
         const val HINT_DEGREES = 15
+
+        /** Traço mínimo da mira, em raios (com o anel quase encostado na branca). */
+        const val SHORT_GUIDE = 0.6
+
+        /** Raios de direções diferentes testados na busca da linha. */
+        const val GUIDE_TRIES = 4
+
+        /** Graus: raios mais perto que isso de um já testado são o mesmo traço. */
+        const val GUIDE_TRY_SPREAD = 3
+
+        /** Fração branca máxima no miolo do anel (a branca ou outra bola no fim da linha é cheia). */
+        const val HOLLOW_RING = 0.4
+
+        /** Em raios: até onde procura um anel quase encostado na branca. */
+        const val CLOSE_RING = 3.6
+        const val CLOSE_RING_STEP_DEG = 2.0
+
+        /** Brancura (menor canal de cor) do pano mais claro; acima disso conta como traço. */
+        const val WHITE_BASE = 150.0
+
+        /** Pontos do anel mais longe que isso (px) do círculo ajustado saem do ajuste. */
+        const val RING_FIT_PX = 0.6
 
         /** Distância máxima (px) de um ponto até a reta ajustada para continuar no ajuste. */
         const val OUTLIER_PX = 1.5

@@ -80,6 +80,10 @@ object ShotSolver {
      * A primeira bola que ela encostar ([target] ou uma das [obstacles], as outras bolas da mesa)
      * vira a bola alvo: calcula o caminho dela, o da branca depois do choque e, se a bola alvo
      * acertar outra bola, o caminho dessa outra (combinação). Os caminhos param na bola que encostarem.
+     *
+     * [target] é a bola que o anel do jogo encosta: se a branca chega nela em linha reta, nenhum
+     * obstáculo para a branca antes. O jogo já mostrou que ela passa; uma bola que pareça estar no
+     * caminho só raspa por um ou dois pixels de erro na posição achada.
      */
     fun solve(
         table: Table,
@@ -91,7 +95,9 @@ object ShotSolver {
         obstacles: List<Vec2> = emptyList(),
     ): Shot {
         val balls = listOfNotNull(target) + obstacles
-        val cuePath = trace(table, cue, aim, cushions, balls, sideSpin = spin.side)
+        val toTarget = target?.let { trace(table, cue, aim, cushions, listOf(it), sideSpin = spin.side) }
+            ?.takeIf { it.hitBall != null && it.bounces.isEmpty() }
+        val cuePath = toTarget ?: trace(table, cue, aim, cushions, balls, sideSpin = spin.side)
         val hit = cuePath.hitBall ?: return Shot(cuePath)
         val others = balls.filter { it != hit }
         val ghost = cuePath.points.last()
