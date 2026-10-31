@@ -87,6 +87,9 @@ object ShotSolver {
      * [target] é a bola que o anel do jogo encosta: se a branca chega nela em linha reta, nenhum
      * obstáculo para a branca antes. O jogo já mostrou que ela passa; uma bola que pareça estar no
      * caminho só raspa por um ou dois pixels de erro na posição achada.
+     *
+     * [cushion] é o anel que o jogo desenha quando a branca vai direto numa tabela: as tabelas são
+     * acertadas para a batida cair nele (ver [Table.throughCushionContact]).
      */
     fun solve(
         table: Table,
@@ -96,7 +99,10 @@ object ShotSolver {
         cushions: Int,
         spin: Spin = Spin.NONE,
         obstacles: List<Vec2> = emptyList(),
+        cushion: Vec2? = null,
     ): Shot {
+        // Anel do jogo numa tabela (branca indo direto nela): a batida cai nele.
+        val table = if (target == null && cushion != null) table.throughCushionContact(cushion) else table
         val balls = listOfNotNull(target) + obstacles
         val toTarget = target?.let { trace(table, cue, aim, cushions, listOf(it), sideSpin = spin.side) }
             ?.takeIf { it.hitBall != null && it.bounces.isEmpty() }

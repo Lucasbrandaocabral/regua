@@ -39,6 +39,18 @@ class SyntheticTable:
     def frame(self) -> np.ndarray:
         return np.clip(self.pixels, 0, 255).astype(np.uint8)
 
+    def decorated_rails(self):
+        """Trilho enfeitado como o das mesas de torneio: uma faixa creme com um friso escuro por dentro,
+        que dá uma borda bem mais forte que a da borracha e também forma um retângulo 2:1."""
+        t, r, xx, yy = self.table, self.r, self._xx, self._yy
+        # Mais longe nas laterais que em cima e embaixo, para o retângulo da faixa ficar 2:1.
+        def ring(side: float, end: float):
+            inner = (xx >= t.left - 2 * side) & (xx <= t.right + 2 * side) & (yy >= t.top - side) & (yy <= t.bottom + side)
+            outer = (xx >= t.left - 2 * end) & (xx <= t.right + 2 * end) & (yy >= t.top - end) & (yy <= t.bottom + end)
+            return outer & ~inner
+        self.pixels[ring(1.0 * r, 1.4 * r)] = (25, 10, 10)
+        self.pixels[ring(1.4 * r, 1.9 * r)] = (245, 232, 200)
+
     def _disc(self, c: Vec2, radius: float):
         return (self._xx - c.x) ** 2 + (self._yy - c.y) ** 2 <= radius * radius
 

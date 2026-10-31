@@ -250,6 +250,7 @@ class ScreenTracker(
         objectBall = r.objectBall?.let { it * k },
         objectGuideLength = r.objectGuideLength * k,
         balls = r.balls.map { it * k },
+        cushion = r.cushion?.let { it * k },
     )
 
     private companion object {

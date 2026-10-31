@@ -46,6 +46,18 @@ def test_pocket_jaws():
     assert close(near_corner.bounces[0], Vec2(375, 190))
 
 
+def test_cushion_ring_corrects_the_cushion_lines():
+    # A calibração erra a tabela de cima por 3 px; o anel do jogo mostra onde a branca encosta.
+    contact = Vec2(237.0, 13.0)
+    shot = solve(TABLE, Vec2(100, 150), Vec2(1, -1), None, 2, cushion=contact)
+    assert close(shot.cue.bounces[0], contact)
+    # As outras tabelas mudam igual: a da direita fica em 390 - 3.
+    assert shot.cue.bounces[1].x == pytest.approx(387.0)
+    # Anel longe demais da calibração não é a tabela: não mexe.
+    far = solve(TABLE, Vec2(100, 150), Vec2(1, -1), None, 2, cushion=Vec2(200.0, 40.0))
+    assert close(far.cue.bounces[0], Vec2(240.0, 10.0))
+
+
 def test_full_hit_and_cut():
     full = solve(TABLE, Vec2(100, 100), Vec2(1, 0), Vec2(200, 100), 2)
     assert close(full.ghost, Vec2(180, 100))

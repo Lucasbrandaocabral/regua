@@ -61,6 +61,7 @@ class AimResult:
     object_ball: Vec2 | None  # centro da bola alvo
     object_guide_length: float  # até onde aparece a linha que sai da bola alvo
     balls: list[Vec2] = field(default_factory=list)  # outras bolas paradas (sem branca e alvo)
+    cushion: Vec2 | None = None  # centro do anel quando a branca vai direto numa tabela
 
     def scaled(self, k: float) -> "AimResult":
         return AimResult(
@@ -68,6 +69,7 @@ class AimResult:
             self.ghost * k if self.ghost else None,
             self.object_ball * k if self.object_ball else None,
             self.object_guide_length * k, [b * k for b in self.balls],
+            self.cushion * k if self.cushion else None,
         )
 
     def shifted(self, offset: Vec2) -> "AimResult":
@@ -76,6 +78,7 @@ class AimResult:
             self.ghost + offset if self.ghost else None,
             self.object_ball + offset if self.object_ball else None,
             self.object_guide_length, [b + offset for b in self.balls],
+            self.cushion + offset if self.cushion else None,
         )
 
 
@@ -196,7 +199,7 @@ class AimDetector:
                 cue = self._cue_on_short_guide(rough, ring, r)
                 direction = (ring - cue).normalized()
             guide_length = (ring - cue).dot(direction)
-        ghost, obj = None, None
+        ghost, obj, cushion = None, None, None
         if ring is not None:
             obj = self._find_object_ball(ring, direction)
             if self._inside_inner(ring, 0.6 * r):
@@ -205,8 +208,9 @@ class AimDetector:
                 # Anel colado na tabela, mas com uma bola encostada nele: o jogo desenha a linha dela.
                 ghost = ring
             else:
-                # Anel colado na tabela é a branca batendo na tabela, não numa bola.
-                obj = None
+                # Anel colado na tabela é a branca batendo na tabela, não numa bola: é onde o jogo diz
+                # que ela encosta, mais exato que a calibração.
+                obj, cushion = None, ring
 
         balls = [
             b for b in self._other_balls(cue)
@@ -219,7 +223,7 @@ class AimDetector:
             cue, direction, guide_length, ghost,
             obj.origin if obj else None,
             (obj.end - obj.origin).dot(obj.direction) if obj else 0.0,
-            balls,
+            balls, cushion,
         )
 
     # --- máscara e utilidades ---

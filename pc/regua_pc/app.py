@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import html
 import sys
+from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider,
     QVBoxLayout, QWidget,
@@ -54,6 +56,7 @@ class MainWindow(QWidget):
         self.tracker = Tracker(settings)
         self.tracker.updated.connect(self._on_update)
         self.tracker.calibrated.connect(self._on_calibrated)
+        self.tracker.saved.connect(self._on_saved)
         self._last_size: tuple[int, int] | None = None
         self._running = False
         self._test_image = image
@@ -68,7 +71,20 @@ class MainWindow(QWidget):
         self.toggle_button.setObjectName("primary")
         self.toggle_button.setCursor(Qt.PointingHandCursor)
         self.toggle_button.clicked.connect(self._toggle_running)
-        root.addWidget(self.toggle_button)
+        self.save_button = QPushButton("Guardar quadro")
+        self.save_button.setCursor(Qt.PointingHandCursor)
+        self.save_button.setToolTip("Guarda em Imagens\\Regua o quadro que a régua está analisando, "
+                                    "para ver o que ela não reconheceu")
+        self.save_button.clicked.connect(self._save_frame)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.toggle_button, 1)
+        buttons.addWidget(self.save_button)
+        root.addLayout(buttons)
+        self.save_hint = _hint("")
+        self.save_hint.setTextFormat(Qt.RichText)
+        self.save_hint.setOpenExternalLinks(True)
+        self.save_hint.hide()
+        root.addWidget(self.save_hint)
         root.addWidget(self._lines_card())
         root.addWidget(self._table_card())
         footer = QHBoxLayout()
@@ -263,6 +279,30 @@ class MainWindow(QWidget):
         self.settings.spin_side, self.settings.spin_follow = side, follow
         self._set("spin_side", side)
 
+    def _save_frame(self) -> None:
+        if not self._running:
+            self._show_save_hint("Ligue a régua para guardar o que ela está vendo.")
+            return
+        self.tracker.save_next = True
+        self._show_save_hint("Guardando…")
+
+    def _on_saved(self, result) -> None:
+        if isinstance(result, Path):
+            folder = QUrl.fromLocalFile(str(result.parent)).toString()
+            link = f"<a href=\"{folder}\" style=\"color: {theme.CYAN}\">{html.escape(result.name)}</a>"
+            self._show_save_hint(f"Guardado {link} (e a cópia anotada). Abre em “{TEST_ITEM}”.",
+                                 f"Pasta: {result.parent}")
+        else:
+            self._show_save_hint(f"Não deu para guardar o quadro: {html.escape(result)}")
+
+    def _show_save_hint(self, text: str, tooltip: str = "") -> None:
+        self.save_hint.setText(text)
+        self.save_hint.setToolTip(tooltip)
+        self.save_hint.show()
+        # A janela tem largura fixa: cresce para baixo para o aviso não espremer os cartões (depois
+        # que o texto novo já foi diagramado).
+        QTimer.singleShot(0, self.adjustSize)
+
     def _calibrate(self) -> None:
         self.tracker.calibrate_now = True
         self.table_hint.setText("Calibrando… (deixe a mesa do jogo visível)")
@@ -286,7 +326,7 @@ class MainWindow(QWidget):
         if u.size:
             self._last_size = u.size
         if u.status in ("seguindo", "procurando"):
-            self.stats.setText(f"{u.fps:.0f} quadros/s · detecção {u.detect_ms:.0f} ms")
+            self.stats.setText(f"{u.hits}/{u.fps:.0f} quadros com mira · detecção {u.detect_ms:.0f} ms")
         else:
             self.stats.setText("—")
         if u.thumbnail is not None:

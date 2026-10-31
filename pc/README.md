@@ -39,6 +39,8 @@ python regua.py
    e arraste os cantos.
 4. Jogue normalmente: a régua segue a sua mira. O selo no topo mostra "Seguindo a mira" (verde) ou
    "Procurando a mira" (amarelo, quando a linha do jogo não aparece: vez do adversário, bolas andando).
+   No rodapé, "9/12 quadros com mira" diz em quantos dos quadros analisados no último segundo ela achou
+   a mira.
 
 Em **Linhas** você escolhe quantas tabelas mostrar (0 a 5), se as linhas param nas outras bolas, se mostra
 a branca depois do choque e o efeito (marque o mesmo ponto vermelho do jogo; duplo clique zera; é uma
@@ -52,11 +54,16 @@ Sem o jogo aberto dá para testar com um print: escolha **Testar com um print…
 - **"Janela não encontrada"**: a janela do jogo foi fechada ou minimizada. Abra o jogo e clique em ⟳.
 - **Fica sempre "Procurando a mira"**: confira a calibração em **Mesa**. Se a miniatura do jogo aparece
   preta, o Windows não está deixando capturar essa janela.
+- **A linha do jogo está na tela e a régua não acha**: clique em **Guardar quadro**. A régua guarda em
+  Imagens\Regua o quadro exato que estava analisando (o nome diz `com-mira` ou `sem-mira`) e uma cópia
+  `-anotado` com a mesa que ela usou em ciano e o que achou em magenta. O quadro puro abre em
+  **Testar com um print…**, então é ele (e não uma foto do monitor) que serve para investigar o problema.
 - **As linhas aparecem deslocadas**: use o jogo e a Régua no monitor principal, com a escala do Windows
   igual nos monitores.
 
-As imagens da tela são analisadas só no seu computador, na hora; nada é salvo nem enviado. Usar a
-régua em partidas online contra outras pessoas pode violar os termos do jogo.
+As imagens da tela são analisadas só no seu computador, na hora; nada é enviado, e só fica salvo o
+quadro que você mandar guardar. Usar a régua em partidas online contra outras pessoas pode violar os
+termos do jogo.
 
 ## Desenvolvimento
 
@@ -65,6 +72,7 @@ régua em partidas online contra outras pessoas pode violar os termos do jogo.
 - `regua_pc/calibration.py`: acha as bordas das tabelas sozinho.
 - `regua_pc/capture.py`, `tracker.py`, `overlay.py`, `app.py`: janela do Windows, captura, camada
   transparente e janela de controle.
+- `regua_pc/snapshot.py`: guarda o quadro analisado (puro e anotado) pelo botão **Guardar quadro**.
 - Testes: `python -m pytest -q tests` (mesas desenhadas pelos testes, sem precisar do jogo).
 - Simulador: `python simulador.py` sorteia mesas parecidas com as do 8 Ball Pool (tamanho de celular,
   bolas lisas e listradas, brilho, sombra, taco e as linhas do jogo), roda a régua em cada uma e mostra

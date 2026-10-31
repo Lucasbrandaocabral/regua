@@ -42,6 +42,18 @@ data class Table(
         }
     }
 
+    /**
+     * A mesma mesa com as quatro tabelas deslocadas igualmente para dentro ou para fora, de modo que o
+     * centro da bola encostada na tabela mais perto de [p] fique em [p] (o anel que o jogo desenha onde
+     * a branca bate). Erro de calibração costuma ser igual nas quatro: é a mesma borda da borracha e o
+     * mesmo raio da bola.
+     */
+    fun throughCushionContact(p: Vec2): Table {
+        val shift = listOf(p.x - minX, maxX - p.x, p.y - minY, maxY - p.y).minBy { kotlin.math.abs(it) }
+        if (kotlin.math.abs(shift) > MAX_CUSHION_SHIFT * ballRadius) return this
+        return Table(left + shift, top + shift, right - shift, bottom - shift, ballRadius)
+    }
+
     /** As duas pontas da boca da caçapa, na linha das tabelas. */
     fun mouth(id: PocketId): Pair<Vec2, Vec2> {
         val j = CORNER_JAW * ballRadius
@@ -68,6 +80,9 @@ data class Table(
 
         /** A bola só cai se o centro passa pelo menos isso longe das duas pontas. */
         const val JAW_CLEARANCE = 0.95
+
+        /** Anel na tabela mais longe que isso da calibração é outra coisa: não ajusta as tabelas. */
+        const val MAX_CUSHION_SHIFT = 0.8
 
         const val CORNER_HOLE_OFFSET = 1.0
         const val CORNER_HOLE_RADIUS = 2.1
