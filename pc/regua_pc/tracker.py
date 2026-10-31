@@ -12,6 +12,7 @@ from .calibration import find_table, guess_table
 from .capture import Rect, ScreenGrabber, client_rect
 from .geometry import Table
 from .settings import Settings
+from .snapshot import save_frame
 from .vision import AimDetector, AimResult
 
 MAX_FPS = 30
@@ -70,6 +71,7 @@ class Update:
     table: Table | None = None
     result: AimResult | None = None
     fps: float = 0.0
+    hits: int = 0  # quadros do último segundo em que achou a mira
     detect_ms: float = 0.0
     thumbnail: np.ndarray | None = None
     thumbnail_scale: float = 1.0
@@ -79,12 +81,14 @@ class Update:
 class Tracker(QThread):
     updated = Signal(object)
     calibrated = Signal(bool)
+    saved = Signal(object)  # caminho do quadro guardado, ou a mensagem de erro (str)
 
     def __init__(self, settings: Settings):
         super().__init__()
         self.settings = settings
         self.source = None
         self.calibrate_now = False
+        self.save_next = False  # guarda o próximo quadro analisado (para ver o que a régua não achou)
         self._stop = False
 
     def stop(self) -> None:
@@ -96,7 +100,7 @@ class Tracker(QThread):
         detector = AimDetector()
         previous: AimResult | None = None
         last_thumb = 0.0
-        frame_times: list[float] = []
+        frame_times: list[tuple[float, bool]] = []  # (quando, achou a mira) no último segundo
         try:
             while not self._stop:
                 started = time.perf_counter()
@@ -134,11 +138,17 @@ class Tracker(QThread):
                 result = detector.detect(frame, table, previous)
                 detect_ms = (time.perf_counter() - t0) * 1000
                 previous = result
+                if self.save_next:
+                    self.save_next = False
+                    try:
+                        self.saved.emit(save_frame(frame, table, result))
+                    except Exception as e:  # pasta sem permissão, disco cheio...
+                        self.saved.emit(str(e))
 
                 now = time.perf_counter()
-                frame_times = [t for t in frame_times if now - t < 1.0] + [now]
+                frame_times = [(t, ok) for t, ok in frame_times if now - t < 1.0] + [(now, result is not None)]
                 update = Update("seguindo" if result else "procurando", rect, (w, h), table, result,
-                                fps=len(frame_times), detect_ms=detect_ms)
+                                fps=len(frame_times), hits=sum(ok for _, ok in frame_times), detect_ms=detect_ms)
                 if now - last_thumb >= THUMBNAIL_EVERY:
                     last_thumb = now
                     step = max(1, w // 480)
