@@ -392,6 +392,7 @@ class OverlayService : Service(), ControlPanel.Actions {
         objectBall = r.objectBall?.let { it - overlayOffset },
         objectGuideLength = r.objectGuideLength,
         balls = r.balls.map { it - overlayOffset },
+        cushion = r.cushion?.let { it - overlayOffset },
     )
 
     @Suppress("DEPRECATION")

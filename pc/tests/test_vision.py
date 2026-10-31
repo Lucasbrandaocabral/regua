@@ -5,7 +5,7 @@ import pytest
 
 from regua_pc.balls import BallFinder
 from regua_pc.calibration import find_table
-from regua_pc.geometry import Table, Vec2
+from regua_pc.geometry import Table, Vec2, solve
 from regua_pc.vision import AimDetector
 
 from .synthetic import SyntheticTable
@@ -132,6 +132,25 @@ def test_simulated_game_scenes():
     assert ok >= 9
 
 
+@pytest.mark.parametrize("degrees", [250.0, 297.0])
+def test_cushion_ring_gives_the_bounce_point(degrees):
+    # Mira direta na tabela de cima, com a linha de verdade 2,5 px para dentro da calibração.
+    scene = SyntheticTable()
+    t = scene.table
+    cue = Vec2(600, 280)
+    d = Vec2.of_angle(math.radians(degrees))
+    contact = cue + d * ((cue.y - (t.min_y + 2.5)) / -d.y)
+    scene.cue(cue, d)
+    scene.cue_ball(cue)
+    scene.guide(cue, contact)
+    scene.ring(contact)
+    res = AimDetector().detect(scene.frame(), t)
+    assert res is not None and res.ghost is None
+    assert res.cushion is not None and res.cushion.distance_to(contact) < 0.7
+    shot = solve(t, res.cue, res.direction, None, 1, cushion=res.cushion)
+    assert shot.cue.bounces[0].distance_to(contact) < 0.7
+
+
 def test_previous_frame_hint_and_fallback():
     cue = Vec2(600, 280)
     before = SyntheticTable()
@@ -205,8 +224,13 @@ def test_ball_finder_and_other_balls():
     # Google Play Games: janela mais quadrada e com barra lateral, mesa menor e fora do centro.
     (1074, 672, Table(196.3, 214.1, 944.7, 588.2, 11.3)),
 ])
-def test_auto_calibration_finds_cushions(width, height, t):
+@pytest.mark.parametrize("decorated", [False, True])
+def test_auto_calibration_finds_cushions(width, height, t, decorated):
+    # Com trilho enfeitado (mesas de torneio), a borda do trilho é mais forte que a da borracha e
+    # também forma 2:1; a bola bate na de dentro.
     scene = SyntheticTable(width, height, t)
+    if decorated:
+        scene.decorated_rails()
     found = find_table(scene.frame())
     assert found is not None
     for a, b in ((found.left, t.left), (found.top, t.top), (found.right, t.right), (found.bottom, t.bottom)):

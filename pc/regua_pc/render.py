@@ -25,7 +25,7 @@ def draw_auto_shot(p: QPainter, aim: AimResult, table: Table, settings: Settings
     r = table.ball_radius
     obstacles = aim.balls if settings.use_balls else []
     shot = solve(table, aim.cue, aim.direction, aim.object_ball, settings.cushions,
-                 Spin(settings.spin_side, settings.spin_follow), obstacles)
+                 Spin(settings.spin_side, settings.spin_follow), obstacles, cushion=aim.cushion)
     width = max(2.0, 0.2 * r)
 
     holes = QPainterPath()

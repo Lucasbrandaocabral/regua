@@ -227,12 +227,15 @@ class AimDetectorTest {
         val scene = SyntheticTable()
         val cue = Vec2(600.0, 280.0)
         val dir = Vec2(0.0, -1.0)
-        val ghost = Vec2(600.0, scene.table.minY)
+        // A linha de verdade 2,5 px para dentro da calibração: o anel diz onde a branca encosta.
+        val ghost = Vec2(600.0, scene.table.minY + 2.5)
         scene.aimAt(cue, target = null, direction = dir, ghostOnCushion = ghost)
         val result = detector.detect(scene.frame(), scene.table)!!
         assertTrue(angleBetween(result.direction, dir) < 0.15)
         assertNull(result.ghost)
         assertNull(result.objectBall)
+        val cushion = assertNotNullAnd(result.cushion, "anel na tabela")
+        assertTrue("anel na tabela: $cushion", cushion.distanceTo(ghost) < 0.7)
     }
 
     @Test

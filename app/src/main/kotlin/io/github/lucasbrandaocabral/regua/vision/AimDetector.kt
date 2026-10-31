@@ -38,6 +38,8 @@ class AimDetector {
         val objectGuideLength: Double,
         /** Centros das outras bolas paradas na mesa (sem a branca e sem a bola alvo). */
         val balls: List<Vec2> = emptyList(),
+        /** Centro do anel quando a branca vai direto numa tabela: onde o jogo diz que ela encosta. */
+        val cushion: Vec2? = null,
     )
 
     /** Reta ajustada num traço: passa por [origin] na direção [direction] e o traço acaba em [end]. */
@@ -99,6 +101,7 @@ class AimDetector {
         }
         var ghost: Vec2? = null
         var objectBall: Line? = null
+        var cushion: Vec2? = null
         val found = ring
         if (found != null) {
             val obj = if (findObjectBall) findObjectBall(frame, table, found, direction) else null
@@ -109,8 +112,11 @@ class AimDetector {
                 // Anel colado na tabela, mas com uma bola encostada nele: o jogo desenha a linha dela.
                 ghost = found
                 objectBall = obj
+            } else {
+                // Anel colado na tabela é a branca batendo na tabela, não numa bola: é onde o jogo diz
+                // que ela encosta, mais exato que a calibração.
+                cushion = found
             }
-            // Senão, anel colado na tabela é a branca batendo na tabela, não numa bola.
         }
         val balls = otherBalls(frame, table, cue).filter { b ->
             b.distanceTo(cue) > CUE_EXCLUSION * r &&
@@ -126,6 +132,7 @@ class AimDetector {
             objectBall = objectBall?.origin,
             objectGuideLength = objectBall?.let { (it.end - it.origin) dot it.direction } ?: 0.0,
             balls = balls,
+            cushion = cushion,
         )
     }
 

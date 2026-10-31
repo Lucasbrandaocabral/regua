@@ -2,9 +2,11 @@
 
 A borda onde a bola encosta é uma linha reta e longa onde a borracha da tabela (clara) encontra a
 sombra que ela faz no pano (escura). Isso vale para qualquer cor de mesa. O ponto de partida são as
-bordas mais fortes em faixas largas da janela que formam uma mesa 2:1, porque o lugar da mesa muda
-com o formato da janela (no Google Play Games ainda tem a barra lateral). Se isso falhar, tenta o
-layout do celular: a mesa ocupa uma fração fixa da altura da janela e fica centralizada.
+bordas fortes em faixas largas da janela que formam uma mesa 2:1, porque o lugar da mesa muda com o
+formato da janela (no Google Play Games ainda tem a barra lateral). Das que formam 2:1 vale a mais de
+dentro: nas mesas com trilho enfeitado as bordas do trilho são mais fortes que a da borracha, mas
+ficam do lado de fora dela. Se isso falhar, tenta o layout do celular: a mesa ocupa uma fração fixa da
+altura da janela e fica centralizada.
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ TOP = 255.5 / 1080
 BOTTOM = 984.5 / 1080
 BALL_PER_HEIGHT = 22.0 / 729.0  # raio da bola / altura da mesa (fixo no jogo)
 MIN_EDGE_CONTRAST = 25.0
-EDGE_CANDIDATES = 5  # bordas mais fortes de cada lado testadas na busca larga
+EDGE_CANDIDATES = 15  # bordas mais fortes de cada lado testadas na busca larga
+ASPECT = (1.95, 2.05)  # largura/altura aceita para a mesa da busca larga (o jogo é 2:1)
 
 
 def luminance(rgb: np.ndarray) -> np.ndarray:
@@ -39,17 +42,23 @@ def find_table(rgb: np.ndarray, start: Table | None = None) -> Table | None:
     fracas)."""
     h, w = rgb.shape[:2]
     lum = luminance(rgb.astype(np.float32))
-    starts = [start] if start else [_coarse_table(lum), guess_table(w, h)]
-    for t in starts:
-        found = _refine(lum, t) if t else None
+    # A busca larga já acha a borda certa: o refinamento só olha uns pixels em volta dela, senão
+    # pularia para a borda mais forte do trilho, logo ao lado.
+    starts = [(start, WIDE_SEARCH)] if start else [(_coarse_table(lum), NARROW_SEARCH), (guess_table(w, h), WIDE_SEARCH)]
+    for t, search in starts:
+        found = _refine(lum, t, search) if t else None
         if found:
             return found
     return None
 
 
+WIDE_SEARCH = 0.08  # em alturas da mesa: quanto o refinamento procura em volta de um chute
+NARROW_SEARCH = 0.012  # em volta de uma borda já achada
+
+
 def _coarse_table(lum: np.ndarray) -> Table | None:
-    """Sem saber onde a mesa está: as bordas mais fortes de cada lado, medidas no meio da janela
-    (que sempre cai dentro da mesa), combinadas na mesa 2:1 com mais contraste somado."""
+    """Sem saber onde a mesa está: as bordas fortes de cada lado, medidas no meio da janela (que
+    sempre cai dentro da mesa), combinadas na mesa 2:1 mais de dentro (a de menor área)."""
     h, w = lum.shape
     cols = np.arange(int(0.3 * w), int(0.7 * w), 2)
     rows = np.arange(int(0.4 * h), int(0.6 * h), 2)
@@ -57,21 +66,22 @@ def _coarse_table(lum: np.ndarray) -> Table | None:
     bottoms = _edge_candidates(lum, cols, np.arange(h // 2, h - 3), axis=0, outside=+1)
     lefts = _edge_candidates(lum, rows, np.arange(2, w // 2), axis=1, outside=-1)
     rights = _edge_candidates(lum, rows, np.arange(w // 2, w - 3), axis=1, outside=+1)
-    best, best_score = None, 0.0
-    for top, s_top in tops:
-        for bottom, s_bottom in bottoms:
-            for left, s_left in lefts:
-                for right, s_right in rights:
-                    score = s_top + s_bottom + s_left + s_right
-                    if 1.9 <= (right - left) / (bottom - top) <= 2.1 and score > best_score:
-                        best, best_score = (left, top, right, bottom), score
+    best, best_area = None, float("inf")
+    for top, _ in tops:
+        for bottom, _ in bottoms:
+            height = bottom - top
+            for left, _ in lefts:
+                for right, _ in rights:
+                    width = right - left
+                    if ASPECT[0] <= width / height <= ASPECT[1] and width * height < best_area:
+                        best, best_area = (left, top, right, bottom), width * height
     if best is None:
         return None
     left, top, right, bottom = best
     return Table(left, top, right, bottom, BALL_PER_HEIGHT * (bottom - top))
 
 
-def _refine(lum: np.ndarray, t: Table) -> Table | None:
+def _refine(lum: np.ndarray, t: Table, search_fraction: float = WIDE_SEARCH) -> Table | None:
     h, w = lum.shape
     left, top, right, bottom = t.left, t.top, t.right, t.bottom
     for _ in range(3):
@@ -87,7 +97,7 @@ def _refine(lum: np.ndarray, t: Table) -> Table | None:
         rows = rows[(rows >= 0) & (rows < h)]
         if len(cols) < 10 or len(rows) < 10:
             return None
-        search = 0.08 * th
+        search = max(3.0, search_fraction * th)
         top = _edge(lum, cols, top - search, top + search, axis=0, outside=-1)
         bottom = _edge(lum, cols, bottom - search, bottom + search, axis=0, outside=+1)
         left = _edge(lum, rows, left - search, left + search, axis=1, outside=-1)

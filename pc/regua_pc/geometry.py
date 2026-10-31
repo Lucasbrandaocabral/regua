@@ -73,6 +73,7 @@ class Pocket:
 CORNER_JAW = 2.2  # ponta da caçapa de canto, contando da tabela do lado
 SIDE_JAW = 1.9  # ponta da caçapa do meio, contando do meio da tabela
 JAW_CLEARANCE = 0.95  # a bola só cai se o centro passa pelo menos isso longe das duas pontas
+MAX_CUSHION_SHIFT = 0.8  # anel na tabela mais longe que isso da calibração é outra coisa, não ajusta
 CORNER_HOLE_OFFSET = 1.0
 CORNER_HOLE_RADIUS = 2.1
 SIDE_HOLE_OFFSET = 1.8
@@ -154,6 +155,17 @@ class Table:
     def pockets(self) -> list[Pocket]:
         return [self.pocket(p) for p in PocketId]
 
+    def through_cushion_contact(self, p: Vec2) -> "Table":
+        """A mesma mesa com as quatro tabelas deslocadas igualmente para dentro ou para fora, de modo
+        que o centro da bola encostada na tabela mais perto de ``p`` fique em ``p`` (o anel que o jogo
+        desenha onde a branca bate). Erro de calibração costuma ser igual nas quatro: é a mesma borda
+        da borracha e o mesmo raio da bola."""
+        gaps = (p.x - self.min_x, self.max_x - p.x, p.y - self.min_y, self.max_y - p.y)
+        shift = min(gaps, key=abs)
+        if abs(shift) > MAX_CUSHION_SHIFT * self.ball_radius:
+            return self
+        return Table(self.left + shift, self.top + shift, self.right - shift, self.bottom - shift, self.ball_radius)
+
 
 class PathEnd(Enum):
     CUSHION = "cushion"  # parou na última tabela permitida
@@ -209,6 +221,7 @@ def solve(
     cushions: int,
     spin: Spin = Spin(),
     obstacles: list[Vec2] | tuple[Vec2, ...] = (),
+    cushion: Vec2 | None = None,
 ) -> Shot:
     """Calcula a tacada. A primeira bola que a branca encostar (o alvo ou um dos obstáculos) vira a
     bola alvo; os caminhos param na bola que encostarem e, se a bola alvo acertar outra, calcula
@@ -216,7 +229,12 @@ def solve(
 
     ``target`` é a bola que o anel do jogo encosta: se a branca chega nela em linha reta, nenhum
     obstáculo para a branca antes. O jogo já mostrou que ela passa; uma bola que pareça estar no
-    caminho só raspa por um ou dois pixels de erro na posição achada."""
+    caminho só raspa por um ou dois pixels de erro na posição achada.
+
+    ``cushion`` é o anel que o jogo desenha quando a branca vai direto numa tabela: as tabelas são
+    acertadas para a batida cair nele (ver :meth:`Table.through_cushion_contact`)."""
+    if target is None and cushion is not None:
+        table = table.through_cushion_contact(cushion)
     balls = ([target] if target is not None else []) + list(obstacles)
     cue_path = None
     if target is not None:

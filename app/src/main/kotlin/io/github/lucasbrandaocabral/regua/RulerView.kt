@@ -185,7 +185,7 @@ class RulerView(context: Context, private val settings: RulerSettings) : View(co
         val r = table.ballRadius
         // A bola que o anel do jogo toca é sempre a bola alvo aqui (o botão de alvo é do modo manual);
         // as outras bolas achadas na mesa param as linhas que chegarem nelas.
-        val shot = ShotSolver.solve(table, aim.cue, aim.direction, aim.objectBall, settings.cushions, spin(), aim.balls)
+        val shot = ShotSolver.solve(table, aim.cue, aim.direction, aim.objectBall, settings.cushions, spin(), aim.balls, aim.cushion)
 
         canvas.save()
         clipOutCircle(canvas, aim.cue, 1.6 * r)

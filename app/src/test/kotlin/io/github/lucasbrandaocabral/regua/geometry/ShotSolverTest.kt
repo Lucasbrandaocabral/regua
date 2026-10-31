@@ -210,6 +210,19 @@ class ShotSolverTest {
     }
 
     @Test
+    fun cushionRingCorrectsTheCushionLines() {
+        // A calibração erra a tabela de cima por 3 px; o anel do jogo mostra onde a branca encosta.
+        val contact = Vec2(237.0, 13.0)
+        val shot = ShotSolver.solve(table, Vec2(100.0, 150.0), Vec2(1.0, -1.0), null, 2, cushion = contact)
+        assertVec(contact, shot.cue.bounces[0])
+        // As outras tabelas mudam igual: a da direita fica em 390 - 3.
+        assertEquals(387.0, shot.cue.bounces[1].x, 1e-6)
+        // Anel longe demais da calibração não é a tabela: não mexe.
+        val far = ShotSolver.solve(table, Vec2(100.0, 150.0), Vec2(1.0, -1.0), null, 2, cushion = Vec2(200.0, 40.0))
+        assertVec(Vec2(240.0, 10.0), far.cue.bounces[0])
+    }
+
+    @Test
     fun comboFollowsLineOfCentersAtSecondContact() {
         val shot = ShotSolver.solve(
             table, cue = Vec2(50.0, 100.0), aim = Vec2(1.0, 0.0), target = Vec2(150.0, 100.0), cushions = 1,
